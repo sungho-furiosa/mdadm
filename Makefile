@@ -214,6 +214,16 @@ SYSTEMD_UNITS = mdmon@.service mdmonitor.service mdadm-last-resort@.timer \
 all : mdadm mdmon
 man : mdadm.man md.man mdadm.conf.man mdmon.man raid6check.man
 
+# Kernel driver build targets
+driver:
+	$(MAKE) -C driver
+
+driver-clean:
+	$(MAKE) -C driver clean
+
+driver-install:
+	$(MAKE) -C driver install
+
 check_rundir:
 	@if [ ! -d "$(dir $(RUN_DIR))" -a  "$(CHECK_RUN_DIR)" = 1 ]; then \
 		echo "***** Parent of $(RUN_DIR) does not exist.  Maybe set different RUN_DIR="; \
@@ -222,9 +232,9 @@ check_rundir:
 	fi
 
 everything: all swap_super test_stripe raid6check \
-	mdadm.Os mdadm.O2 man
+	mdadm.Os mdadm.O2 man driver
 everything-test: all swap_super test_stripe \
-	mdadm.Os mdadm.O2 man
+	mdadm.Os mdadm.O2 man driver
 
 %.o: %.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(COVERITY_FLAGS) -o $@ -c $<
@@ -284,7 +294,10 @@ $(MON_OBJS) : $(INCL) mdmon.h
 sha1.o : sha1.c sha1.h md5.h
 	$(CC) $(CFLAGS) -DHAVE_STDINT_H -o sha1.o -c sha1.c
 
-install : install-bin install-man install-udev
+install : install-bin install-man install-udev install-driver
+
+install-driver:
+	$(MAKE) -C driver install
 
 install-static : mdadm.static install-man
 	$(INSTALL) -D $(STRIP) -m 755 mdadm.static $(DESTDIR)$(BINDIR)/mdadm
@@ -345,6 +358,7 @@ clean :
 	mdadm.Os mdadm.O2 mdmon.O2 swap_super init.cpio.gz \
 	test_stripe raid6check raid6check.o mdmon mdadm.8
 	rm -rf cov-int
+	$(MAKE) -C driver clean 2>/dev/null || true
 
 dist : clean
 	./makedist
@@ -359,3 +373,5 @@ DISTRO_MAKEFILE := $(wildcard distropkg/Makefile)
 ifdef DISTRO_MAKEFILE
 include $(DISTRO_MAKEFILE)
 endif
+
+.PHONY: driver driver-clean driver-install install-driver
