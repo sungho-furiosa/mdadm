@@ -2,6 +2,8 @@
 
 Linux kernel MD (Multiple Devices / RAID) driver with **P2PDMA (Peer-to-Peer DMA) support**, extracted from kernel 6.14.0 for out-of-tree compilation.
 
+> **Part of mdadm project**: This driver is integrated into the [mdadm](https://github.com/sungho-furiosa/mdadm) repository for unified RAID management and development.
+
 ## 🚀 What is md-p2p?
 
 **md-p2p** is a modified version of the Linux MD RAID driver that enables **PCI Peer-to-Peer DMA** (P2PDMA) support. P2PDMA allows direct memory transfers between PCIe devices without CPU involvement, significantly improving performance for high-speed storage scenarios.
@@ -60,11 +62,34 @@ lspci -vv | grep -i "p2p\|peer"
 
 ## 🔨 Building
 
-Build all modules with the current running kernel:
+### Standalone Build
+
+Build all modules from this directory:
 
 ```bash
+cd driver/
 make
 ```
+
+### Integrated Build (from mdadm root)
+
+Build driver modules from the top-level mdadm directory:
+
+```bash
+# Build only kernel driver modules
+make driver
+
+# Build userspace mdadm + driver modules
+make all-with-driver
+
+# Clean driver build artifacts
+make driver-clean
+
+# Install driver modules to system
+sudo make driver-install
+```
+
+### Kernel-Specific Build
 
 Build for a specific kernel version:
 

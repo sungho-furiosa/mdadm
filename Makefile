@@ -213,6 +213,7 @@ SYSTEMD_UNITS = mdmon@.service mdmonitor.service mdadm-last-resort@.timer \
 
 all : mdadm mdmon
 man : mdadm.man md.man mdadm.conf.man mdmon.man raid6check.man
+all-with-driver : mdadm mdmon driver
 
 # Kernel driver build targets
 driver:
