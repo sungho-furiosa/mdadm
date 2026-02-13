@@ -356,7 +356,7 @@ static int read_sb_page(struct mddev *mddev, loff_t offset,
 		    test_bit(Bitmap_sync, &rdev->flags))
 			continue;
 
-		if (sync_page_io(rdev, sector, iosize, page, REQ_OP_READ, true))
+		if (md_p2p_sync_page_io(rdev, sector, iosize, page, REQ_OP_READ, true))
 			return 0;
 	}
 	return -EIO;
@@ -942,7 +942,7 @@ out:
 				bmname(bitmap), err);
 			goto out_no_sb;
 		}
-		bitmap->cluster_slot = md_cluster_ops->slot_number(bitmap->mddev);
+		bitmap->cluster_slot = md_p2p_cluster_ops->slot_number(bitmap->mddev);
 		goto re_read;
 	}
 
@@ -2021,7 +2021,7 @@ static void md_bitmap_free(void *data)
 		sysfs_put(bitmap->sysfs_can_clear);
 
 	if (mddev_is_clustered(bitmap->mddev) && bitmap->mddev->cluster_info &&
-		bitmap->cluster_slot == md_cluster_ops->slot_number(bitmap->mddev))
+		bitmap->cluster_slot == md_p2p_cluster_ops->slot_number(bitmap->mddev))
 		md_cluster_stop(bitmap->mddev);
 
 	/* Shouldn't be needed - but just in case.... */
@@ -2229,7 +2229,7 @@ static int bitmap_load(struct mddev *mddev)
 		mddev_create_serial_pool(mddev, rdev);
 
 	if (mddev_is_clustered(mddev))
-		md_cluster_ops->load_bitmaps(mddev, mddev->bitmap_info.nodes);
+		md_p2p_cluster_ops->load_bitmaps(mddev, mddev->bitmap_info.nodes);
 
 	/* Clear out old bitmap info first:  Either there is none, or we
 	 * are resuming after someone else has possibly changed things,
@@ -2261,7 +2261,7 @@ static int bitmap_load(struct mddev *mddev)
 	set_bit(MD_RECOVERY_NEEDED, &bitmap->mddev->recovery);
 
 	mddev_set_timeout(mddev, mddev->bitmap_info.daemon_sleep, true);
-	md_wakeup_thread(mddev->thread);
+	md_p2p_wakeup_thread(mddev->thread);
 
 	bitmap_update_sb(bitmap);
 
@@ -2684,7 +2684,7 @@ location_store(struct mddev *mddev, const char *buf, size_t len)
 		 * metadata promptly.
 		 */
 		set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
-		md_wakeup_thread(mddev->thread);
+		md_p2p_wakeup_thread(mddev->thread);
 	}
 	rv = 0;
 out:
@@ -2771,7 +2771,7 @@ timeout_store(struct mddev *mddev, const char *buf, size_t len)
 
 	mddev->bitmap_info.daemon_sleep = timeout;
 	mddev_set_timeout(mddev, timeout, false);
-	md_wakeup_thread(mddev->thread);
+	md_p2p_wakeup_thread(mddev->thread);
 
 	return len;
 }
@@ -2815,7 +2815,7 @@ backlog_store(struct mddev *mddev, const char *buf, size_t len)
 	if (!has_write_mostly) {
 		pr_warn_ratelimited("%s: can't set backlog, no write mostly device available\n",
 				    mdname(mddev));
-		mddev_unlock(mddev);
+		md_p2p_mddev_unlock(mddev);
 		return -EINVAL;
 	}
 

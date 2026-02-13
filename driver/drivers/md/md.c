@@ -85,8 +85,8 @@ static DEFINE_SPINLOCK(pers_lock);
 
 static const struct kobj_type md_ktype;
 
-const struct md_cluster_operations *md_cluster_ops;
-EXPORT_SYMBOL(md_cluster_ops);
+const struct md_cluster_operations *md_p2p_cluster_ops;
+EXPORT_SYMBOL(md_p2p_cluster_ops);
 static struct module *md_cluster_mod;
 
 static DECLARE_WAIT_QUEUE_HEAD(resync_wait);
@@ -103,10 +103,19 @@ static struct workqueue_struct *md_misc_wq;
 struct workqueue_struct *md_bitmap_wq;
 
 static int remove_and_add_spares(struct mddev *mddev,
-				 struct md_rdev *this);
+			 struct md_rdev *this);
 static void mddev_detach(struct mddev *mddev);
 static void export_rdev(struct md_rdev *rdev, struct mddev *mddev);
-static void md_wakeup_thread_directly(struct md_thread __rcu *thread);
+static void md_p2p_wakeup_thread_directly(struct md_thread __rcu *thread);
+
+/* Forward declarations for exported functions */
+void md_p2p_wakeup_thread(struct md_thread __rcu *thread);
+void md_p2p_error(struct mddev *mddev, struct md_rdev *rdev);
+int do_md_p2p_run(struct mddev *mddev);
+void md_p2p_allow_write(struct mddev *mddev);
+int md_p2p_start(struct mddev *mddev);
+void md_p2p_unregister_thread(struct mddev *mddev, struct md_thread __rcu **threadp);
+void md_p2p_reap_sync_thread(struct mddev *mddev);
 
 /*
  * Default number of read corrections we'll attempt on an rdev
@@ -241,7 +250,7 @@ void mddev_create_serial_pool(struct mddev *mddev, struct md_rdev *rdev)
 	if (mddev->serial_info_pool == NULL) {
 		/*
 		 * already in memalloc noio context by
-		 * mddev_suspend()
+		 * md_p2p_mddev_suspend()
 		 */
 		mddev->serial_info_pool =
 			mempool_create_kmalloc_pool(NR_SERIAL_INFOS,
@@ -335,12 +344,12 @@ static bool create_on_open = true;
  */
 static DECLARE_WAIT_QUEUE_HEAD(md_event_waiters);
 static atomic_t md_event_count;
-void md_new_event(void)
+void md_p2p_new_event(void)
 {
 	atomic_inc(&md_event_count);
 	wake_up(&md_event_waiters);
 }
-EXPORT_SYMBOL_GPL(md_new_event);
+EXPORT_SYMBOL_GPL(md_p2p_new_event);
 
 /*
  * Enables to iterate over all existing md arrays
@@ -375,7 +384,7 @@ static bool is_suspended(struct mddev *mddev, struct bio *bio)
 	return true;
 }
 
-bool md_handle_request(struct mddev *mddev, struct bio *bio)
+bool md_p2p_handle_request(struct mddev *mddev, struct bio *bio)
 {
 check_suspended:
 	if (is_suspended(mddev, bio)) {
@@ -407,7 +416,7 @@ check_suspended:
 	percpu_ref_put(&mddev->active_io);
 	return true;
 }
-EXPORT_SYMBOL(md_handle_request);
+EXPORT_SYMBOL(md_p2p_handle_request);
 
 static void md_submit_bio(struct bio *bio)
 {
@@ -438,14 +447,14 @@ static void md_submit_bio(struct bio *bio)
 	/* bio could be mergeable after passing to underlayer */
 	bio->bi_opf &= ~REQ_NOMERGE;
 
-	md_handle_request(mddev, bio);
+	md_p2p_handle_request(mddev, bio);
 }
 
 /*
  * Make sure no new requests are submitted to the device, and any requests that
  * have been submitted are completely handled.
  */
-int mddev_suspend(struct mddev *mddev, bool interruptible)
+int md_p2p_mddev_suspend(struct mddev *mddev, bool interruptible)
 {
 	int err = 0;
 
@@ -495,9 +504,9 @@ int mddev_suspend(struct mddev *mddev, bool interruptible)
 	mutex_unlock(&mddev->suspend_mutex);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mddev_suspend);
+EXPORT_SYMBOL_GPL(md_p2p_mddev_suspend);
 
-static void __mddev_resume(struct mddev *mddev, bool recovery_needed)
+static void __md_p2p_mddev_resume(struct mddev *mddev, bool recovery_needed)
 {
 	lockdep_assert_not_held(&mddev->reconfig_mutex);
 
@@ -508,7 +517,7 @@ static void __mddev_resume(struct mddev *mddev, bool recovery_needed)
 		return;
 	}
 
-	/* entred the memalloc scope from mddev_suspend() */
+	/* entred the memalloc scope from md_p2p_mddev_suspend() */
 	memalloc_noio_restore(mddev->noio_flag);
 
 	percpu_ref_resurrect(&mddev->active_io);
@@ -516,17 +525,17 @@ static void __mddev_resume(struct mddev *mddev, bool recovery_needed)
 
 	if (recovery_needed)
 		set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-	md_wakeup_thread(mddev->thread);
-	md_wakeup_thread(mddev->sync_thread); /* possibly kick off a reshape */
+	md_p2p_wakeup_thread(mddev->thread);
+	md_p2p_wakeup_thread(mddev->sync_thread); /* possibly kick off a reshape */
 
 	mutex_unlock(&mddev->suspend_mutex);
 }
 
-void mddev_resume(struct mddev *mddev)
+void md_p2p_mddev_resume(struct mddev *mddev)
 {
-	return __mddev_resume(mddev, true);
+	return __md_p2p_mddev_resume(mddev, true);
 }
-EXPORT_SYMBOL_GPL(mddev_resume);
+EXPORT_SYMBOL_GPL(md_p2p_mddev_resume);
 
 /* sync bdev before setting device to readonly or stopping raid*/
 static int mddev_set_closing_and_sync_blockdev(struct mddev *mddev, int opener_num)
@@ -566,13 +575,13 @@ static void md_end_flush(struct bio *bio)
 	bio_endio(parent);
 }
 
-bool md_flush_request(struct mddev *mddev, struct bio *bio)
+bool md_p2p_flush_request(struct mddev *mddev, struct bio *bio)
 {
 	struct md_rdev *rdev;
 	struct bio *new;
 
 	/*
-	 * md_flush_reqeust() should be called under md_handle_request() and
+	 * md_flush_reqeust() should be called under md_p2p_handle_request() and
 	 * 'active_io' is already grabbed. Hence it's safe to get rdev directly
 	 * without rcu protection.
 	 */
@@ -599,7 +608,7 @@ bool md_flush_request(struct mddev *mddev, struct bio *bio)
 	bio->bi_opf &= ~REQ_PREFLUSH;
 	return false;
 }
-EXPORT_SYMBOL(md_flush_request);
+EXPORT_SYMBOL(md_p2p_flush_request);
 
 static inline struct mddev *mddev_get(struct mddev *mddev)
 {
@@ -645,7 +654,7 @@ void mddev_put(struct mddev *mddev)
 }
 
 static void md_safemode_timeout(struct timer_list *t);
-static void md_start_sync(struct work_struct *ws);
+static void md_p2p_start_sync(struct work_struct *ws);
 
 static void active_io_release(struct percpu_ref *ref)
 {
@@ -656,7 +665,7 @@ static void active_io_release(struct percpu_ref *ref)
 
 static void no_op(struct percpu_ref *r) {}
 
-int mddev_init(struct mddev *mddev)
+int md_p2p_mddev_init(struct mddev *mddev)
 {
 
 	if (percpu_ref_init(&mddev->active_io, active_io_release,
@@ -694,19 +703,19 @@ int mddev_init(struct mddev *mddev)
 	mddev->level = LEVEL_NONE;
 	mddev_set_bitmap_ops(mddev);
 
-	INIT_WORK(&mddev->sync_work, md_start_sync);
+	INIT_WORK(&mddev->sync_work, md_p2p_start_sync);
 	INIT_WORK(&mddev->del_work, mddev_delayed_delete);
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mddev_init);
+EXPORT_SYMBOL_GPL(md_p2p_mddev_init);
 
-void mddev_destroy(struct mddev *mddev)
+void md_p2p_mddev_destroy(struct mddev *mddev)
 {
 	percpu_ref_exit(&mddev->active_io);
 	percpu_ref_exit(&mddev->writes_pending);
 }
-EXPORT_SYMBOL_GPL(mddev_destroy);
+EXPORT_SYMBOL_GPL(md_p2p_mddev_destroy);
 
 static struct mddev *mddev_find_locked(dev_t unit)
 {
@@ -752,7 +761,7 @@ static struct mddev *mddev_alloc(dev_t unit)
 	if (!new)
 		return ERR_PTR(-ENOMEM);
 
-	error = mddev_init(new);
+	error = md_p2p_mddev_init(new);
 	if (error)
 		goto out_free_new;
 
@@ -782,7 +791,7 @@ static struct mddev *mddev_alloc(dev_t unit)
 
 out_destroy_new:
 	spin_unlock(&all_mddevs_lock);
-	mddev_destroy(new);
+	md_p2p_mddev_destroy(new);
 out_free_new:
 	kfree(new);
 	return ERR_PTR(error);
@@ -794,13 +803,13 @@ static void mddev_free(struct mddev *mddev)
 	list_del(&mddev->all_mddevs);
 	spin_unlock(&all_mddevs_lock);
 
-	mddev_destroy(mddev);
+	md_p2p_mddev_destroy(mddev);
 	kfree(mddev);
 }
 
 static const struct attribute_group md_redundancy_group;
 
-void mddev_unlock(struct mddev *mddev)
+void md_p2p_mddev_unlock(struct mddev *mddev)
 {
 	struct md_rdev *rdev;
 	struct md_rdev *tmp;
@@ -848,7 +857,7 @@ void mddev_unlock(struct mddev *mddev)
 	} else
 		mutex_unlock(&mddev->reconfig_mutex);
 
-	md_wakeup_thread(mddev->thread);
+	md_p2p_wakeup_thread(mddev->thread);
 	wake_up(&mddev->sb_wait);
 
 	list_for_each_entry_safe(rdev, tmp, &delete, same_set) {
@@ -857,9 +866,9 @@ void mddev_unlock(struct mddev *mddev)
 		export_rdev(rdev, mddev);
 	}
 }
-EXPORT_SYMBOL_GPL(mddev_unlock);
+EXPORT_SYMBOL_GPL(md_p2p_mddev_unlock);
 
-struct md_rdev *md_find_rdev_nr_rcu(struct mddev *mddev, int nr)
+struct md_rdev *md_p2p_find_rdev_nr_rcu(struct mddev *mddev, int nr)
 {
 	struct md_rdev *rdev;
 
@@ -869,7 +878,7 @@ struct md_rdev *md_find_rdev_nr_rcu(struct mddev *mddev, int nr)
 
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(md_find_rdev_nr_rcu);
+EXPORT_SYMBOL_GPL(md_p2p_find_rdev_nr_rcu);
 
 static struct md_rdev *find_rdev(struct mddev *mddev, dev_t dev)
 {
@@ -882,7 +891,7 @@ static struct md_rdev *find_rdev(struct mddev *mddev, dev_t dev)
 	return NULL;
 }
 
-struct md_rdev *md_find_rdev_rcu(struct mddev *mddev, dev_t dev)
+struct md_rdev *md_p2p_find_rdev_rcu(struct mddev *mddev, dev_t dev)
 {
 	struct md_rdev *rdev;
 
@@ -892,7 +901,7 @@ struct md_rdev *md_find_rdev_rcu(struct mddev *mddev, dev_t dev)
 
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(md_find_rdev_rcu);
+EXPORT_SYMBOL_GPL(md_p2p_find_rdev_rcu);
 
 static struct md_personality *find_pers(int level, char *clevel)
 {
@@ -920,7 +929,7 @@ static int alloc_disk_sb(struct md_rdev *rdev)
 	return 0;
 }
 
-void md_rdev_clear(struct md_rdev *rdev)
+void md_p2p_rdev_clear(struct md_rdev *rdev)
 {
 	if (rdev->sb_page) {
 		put_page(rdev->sb_page);
@@ -935,7 +944,7 @@ void md_rdev_clear(struct md_rdev *rdev)
 	}
 	badblocks_exit(&rdev->badblocks);
 }
-EXPORT_SYMBOL_GPL(md_rdev_clear);
+EXPORT_SYMBOL_GPL(md_p2p_rdev_clear);
 
 static void super_written(struct bio *bio)
 {
@@ -945,7 +954,7 @@ static void super_written(struct bio *bio)
 	if (bio->bi_status) {
 		pr_err("md: %s gets error=%d\n", __func__,
 		       blk_status_to_errno(bio->bi_status));
-		md_error(mddev, rdev);
+		md_p2p_error(mddev, rdev);
 		if (!test_bit(Faulty, &rdev->flags)
 		    && (bio->bi_opf & MD_FAILFAST)) {
 			set_bit(MD_SB_NEED_REWRITE, &mddev->sb_flags);
@@ -969,7 +978,7 @@ void md_super_write(struct mddev *mddev, struct md_rdev *rdev,
 	 * Increment mddev->pending_writes before returning
 	 * and decrement it on completion, waking up sb_wait
 	 * if zero is reached.
-	 * If an error occurred, call md_error
+	 * If an error occurred, call md_p2p_error
 	 */
 	struct bio *bio;
 
@@ -1010,7 +1019,7 @@ int md_super_wait(struct mddev *mddev)
 	return 0;
 }
 
-int sync_page_io(struct md_rdev *rdev, sector_t sector, int size,
+int md_p2p_sync_page_io(struct md_rdev *rdev, sector_t sector, int size,
 		 struct page *page, blk_opf_t opf, bool metadata_op)
 {
 	struct bio bio;
@@ -1035,14 +1044,14 @@ int sync_page_io(struct md_rdev *rdev, sector_t sector, int size,
 
 	return !bio.bi_status;
 }
-EXPORT_SYMBOL_GPL(sync_page_io);
+EXPORT_SYMBOL_GPL(md_p2p_sync_page_io);
 
 static int read_disk_sb(struct md_rdev *rdev, int size)
 {
 	if (rdev->sb_loaded)
 		return 0;
 
-	if (!sync_page_io(rdev, 0, size, rdev->sb_page, REQ_OP_READ, true))
+	if (!md_p2p_sync_page_io(rdev, 0, size, rdev->sb_page, REQ_OP_READ, true))
 		goto fail;
 	rdev->sb_loaded = 1;
 	return 0;
@@ -1181,7 +1190,7 @@ struct super_type  {
  * has a bitmap. Otherwise, it returns 0.
  *
  */
-int md_check_no_bitmap(struct mddev *mddev)
+int md_p2p_check_no_bitmap(struct mddev *mddev)
 {
 	if (!mddev->bitmap_info.file && !mddev->bitmap_info.offset)
 		return 0;
@@ -1189,7 +1198,7 @@ int md_check_no_bitmap(struct mddev *mddev)
 		mdname(mddev), mddev->pers->name);
 	return 1;
 }
-EXPORT_SYMBOL(md_check_no_bitmap);
+EXPORT_SYMBOL(md_p2p_check_no_bitmap);
 
 /*
  * load_super for 0.90.0
@@ -1741,7 +1750,7 @@ static int super_1_load(struct md_rdev *rdev, struct md_rdev *refdev, int minor_
 		if (offset == 0)
 			return -EINVAL;
 		bb_sector = (long long)offset;
-		if (!sync_page_io(rdev, bb_sector, sectors << 9,
+		if (!md_p2p_sync_page_io(rdev, bb_sector, sectors << 9,
 				  rdev->bb_page, REQ_OP_READ, true))
 			return -EIO;
 		bbp = (__le64 *)page_address(rdev->bb_page);
@@ -2106,7 +2115,7 @@ static void super_1_sync(struct mddev *mddev, struct md_rdev *rdev)
 		/* Nothing to do for bad blocks*/ ;
 	else if (sb->bblog_offset == 0)
 		/* Cannot record bad blocks on this device */
-		md_error(mddev, rdev);
+		md_p2p_error(mddev, rdev);
 	else {
 		struct badblocks *bb = &rdev->badblocks;
 		__le64 *bbp = (__le64 *)page_address(rdev->bb_page);
@@ -2357,7 +2366,7 @@ static LIST_HEAD(pending_raid_disks);
  * from the array. It only succeeds if all working and active component devices
  * are integrity capable with matching profiles.
  */
-int md_integrity_register(struct mddev *mddev)
+int md_p2p_integrity_register(struct mddev *mddev)
 {
 	if (list_empty(&mddev->disks))
 		return 0; /* nothing to do */
@@ -2370,8 +2379,8 @@ int md_integrity_register(struct mddev *mddev)
 	     bioset_integrity_create(&mddev->io_clone_set, BIO_POOL_SIZE))) {
 		/*
 		 * No need to handle the failure of bioset_integrity_create,
-		 * because the function is called by md_run() -> pers->run(),
-		 * md_run calls bioset_exit -> bioset_integrity_free in case
+		 * because the function is called by md_p2p_run() -> pers->run(),
+		 * md_p2p_run calls bioset_exit -> bioset_integrity_free in case
 		 * of failure case.
 		 */
 		pr_err("md: failed to create integrity pool for %s\n",
@@ -2380,7 +2389,7 @@ int md_integrity_register(struct mddev *mddev)
 	}
 	return 0;
 }
-EXPORT_SYMBOL(md_integrity_register);
+EXPORT_SYMBOL(md_p2p_integrity_register);
 
 static bool rdev_read_only(struct md_rdev *rdev)
 {
@@ -2424,11 +2433,11 @@ static int bind_rdev_to_array(struct md_rdev *rdev, struct mddev *mddev)
 		int choice = 0;
 		if (mddev->pers)
 			choice = mddev->raid_disks;
-		while (md_find_rdev_nr_rcu(mddev, choice))
+		while (md_p2p_find_rdev_nr_rcu(mddev, choice))
 			choice++;
 		rdev->desc_nr = choice;
 	} else {
-		if (md_find_rdev_nr_rcu(mddev, rdev->desc_nr)) {
+		if (md_p2p_find_rdev_nr_rcu(mddev, rdev->desc_nr)) {
 			rcu_read_unlock();
 			return -EBUSY;
 		}
@@ -2483,7 +2492,7 @@ static struct md_rdev claim_rdev;
 static void export_rdev(struct md_rdev *rdev, struct mddev *mddev)
 {
 	pr_debug("md: export_rdev(%pg)\n", rdev->bdev);
-	md_rdev_clear(rdev);
+	md_p2p_rdev_clear(rdev);
 #ifndef MODULE
 	if (test_bit(AutoDetected, &rdev->flags))
 		md_autodetect_dev(rdev->bdev->bd_dev);
@@ -2516,7 +2525,7 @@ static void md_kick_rdev_from_array(struct md_rdev *rdev)
 	/*
 	 * kobject_del() will wait for all in progress writers to be done, where
 	 * reconfig_mutex is held, hence it can't be called under
-	 * reconfig_mutex and it's delayed to mddev_unlock().
+	 * reconfig_mutex and it's delayed to md_p2p_mddev_unlock().
 	 */
 	list_add(&rdev->same_set, &mddev->deleting);
 }
@@ -2625,7 +2634,7 @@ static bool does_sb_need_changing(struct mddev *mddev)
 	return false;
 }
 
-void md_update_sb(struct mddev *mddev, int force_change)
+void md_p2p_update_sb(struct mddev *mddev, int force_change)
 {
 	struct md_rdev *rdev;
 	int sync_req;
@@ -2645,11 +2654,11 @@ repeat:
 			force_change = 1;
 		if (test_and_clear_bit(MD_SB_CHANGE_CLEAN, &mddev->sb_flags))
 			nospares = 1;
-		ret = md_cluster_ops->metadata_update_start(mddev);
+		ret = md_p2p_cluster_ops->metadata_update_start(mddev);
 		/* Has someone else has updated the sb */
 		if (!does_sb_need_changing(mddev)) {
 			if (ret == 0)
-				md_cluster_ops->metadata_update_cancel(mddev);
+				md_p2p_cluster_ops->metadata_update_cancel(mddev);
 			bit_clear_unless(&mddev->sb_flags, BIT(MD_SB_CHANGE_PENDING),
 							 BIT(MD_SB_CHANGE_DEVS) |
 							 BIT(MD_SB_CHANGE_CLEAN));
@@ -2684,7 +2693,7 @@ repeat:
 				if (rdev->badblocks.changed) {
 					rdev->badblocks.changed = 0;
 					ack_all_badblocks(&rdev->badblocks);
-					md_error(mddev, rdev);
+					md_p2p_error(mddev, rdev);
 				}
 				clear_bit(Blocked, &rdev->flags);
 				clear_bit(BlockedBadBlocks, &rdev->flags);
@@ -2757,7 +2766,7 @@ repeat:
 	pr_debug("md: updating %s RAID superblock on device (in sync %d)\n",
 		 mdname(mddev), mddev->in_sync);
 
-	mddev_add_trace_msg(mddev, "md md_update_sb");
+	mddev_add_trace_msg(mddev, "md md_p2p_update_sb");
 rewrite:
 	mddev->bitmap_ops->update_sb(mddev->bitmap);
 	rdev_for_each(rdev, mddev) {
@@ -2789,7 +2798,7 @@ rewrite:
 	/* if there was a failure, MD_SB_CHANGE_DEVS was set, and we re-write super */
 
 	if (mddev_is_clustered(mddev) && ret == 0)
-		md_cluster_ops->metadata_update_finish(mddev);
+		md_p2p_cluster_ops->metadata_update_finish(mddev);
 
 	if (mddev->in_sync != sync_req ||
 	    !bit_clear_unless(&mddev->sb_flags, BIT(MD_SB_CHANGE_PENDING),
@@ -2810,7 +2819,7 @@ rewrite:
 		wake_up(&rdev->blocked_wait);
 	}
 }
-EXPORT_SYMBOL(md_update_sb);
+EXPORT_SYMBOL(md_p2p_update_sb);
 
 static int add_bound_rdev(struct md_rdev *rdev)
 {
@@ -2837,7 +2846,7 @@ static int add_bound_rdev(struct md_rdev *rdev)
 	if (mddev->degraded)
 		set_bit(MD_RECOVERY_RECOVER, &mddev->recovery);
 	set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-	md_new_event();
+	md_p2p_new_event();
 	return 0;
 }
 
@@ -2932,7 +2941,7 @@ state_store(struct md_rdev *rdev, const char *buf, size_t len)
 	bool need_update_sb = false;
 
 	if (cmd_match(buf, "faulty") && rdev->mddev->pers) {
-		md_error(rdev->mddev, rdev);
+		md_p2p_error(rdev->mddev, rdev);
 
 		if (test_bit(MD_BROKEN, &rdev->mddev->flags))
 			err = -EBUSY;
@@ -2948,13 +2957,13 @@ state_store(struct md_rdev *rdev, const char *buf, size_t len)
 		else {
 			err = 0;
 			if (mddev_is_clustered(mddev))
-				err = md_cluster_ops->remove_disk(mddev, rdev);
+				err = md_p2p_cluster_ops->remove_disk(mddev, rdev);
 
 			if (err == 0) {
 				md_kick_rdev_from_array(rdev);
 				if (mddev->pers)
 					set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
-				md_new_event();
+				md_p2p_new_event();
 			}
 		}
 	} else if (cmd_match(buf, "writemostly")) {
@@ -2977,7 +2986,7 @@ state_store(struct md_rdev *rdev, const char *buf, size_t len)
 			/* metadata handler doesn't understand badblocks,
 			 * so we need to fail the device
 			 */
-			md_error(rdev->mddev, rdev);
+			md_p2p_error(rdev->mddev, rdev);
 		}
 		clear_bit(Blocked, &rdev->flags);
 		clear_bit(BlockedBadBlocks, &rdev->flags);
@@ -3058,7 +3067,7 @@ state_store(struct md_rdev *rdev, const char *buf, size_t len)
 			 * by this node eventually
 			 */
 			if (!mddev_is_clustered(rdev->mddev) ||
-			    (err = md_cluster_ops->gather_bitmaps(rdev)) == 0) {
+			    (err = md_p2p_cluster_ops->gather_bitmaps(rdev)) == 0) {
 				clear_bit(Faulty, &rdev->flags);
 				err = add_bound_rdev(rdev);
 			}
@@ -3073,7 +3082,7 @@ state_store(struct md_rdev *rdev, const char *buf, size_t len)
 		err = 0;
 	}
 	if (need_update_sb)
-		md_update_sb(mddev, 1);
+		md_p2p_update_sb(mddev, 1);
 	if (!err)
 		sysfs_notify_dirent_safe(rdev->sysfs_state);
 	return err ? err : len;
@@ -3597,7 +3606,7 @@ rdev_attr_store(struct kobject *kobj, struct attribute *attr,
 			rv = -ENODEV;
 		else
 			rv = entry->store(rdev, page, length);
-		suspend ? mddev_unlock_and_resume(mddev) : mddev_unlock(mddev);
+		suspend ? mddev_unlock_and_resume(mddev) : md_p2p_mddev_unlock(mddev);
 	}
 
 	if (kn)
@@ -3621,7 +3630,7 @@ static const struct kobj_type rdev_ktype = {
 	.default_groups	= rdev_default_groups,
 };
 
-int md_rdev_init(struct md_rdev *rdev)
+int md_p2p_rdev_init(struct md_rdev *rdev)
 {
 	rdev->desc_nr = -1;
 	rdev->saved_raid_disk = -1;
@@ -3646,7 +3655,7 @@ int md_rdev_init(struct md_rdev *rdev)
 	 */
 	return badblocks_init(&rdev->badblocks, 0);
 }
-EXPORT_SYMBOL_GPL(md_rdev_init);
+EXPORT_SYMBOL_GPL(md_p2p_rdev_init);
 
 /*
  * Import a device. If 'super_format' >= 0, then sanity check the superblock
@@ -3668,7 +3677,7 @@ static struct md_rdev *md_import_device(dev_t newdev, int super_format, int supe
 	if (!rdev)
 		return ERR_PTR(-ENOMEM);
 
-	err = md_rdev_init(rdev);
+	err = md_p2p_rdev_init(rdev);
 	if (err)
 		goto out_free_rdev;
 	err = alloc_disk_sb(rdev);
@@ -3717,7 +3726,7 @@ static struct md_rdev *md_import_device(dev_t newdev, int super_format, int supe
 out_blkdev_put:
 	fput(rdev->bdev_file);
 out_clear_rdev:
-	md_rdev_clear(rdev);
+	md_p2p_rdev_clear(rdev);
 out_free_rdev:
 	kfree(rdev);
 	return ERR_PTR(err);
@@ -4068,9 +4077,9 @@ level_store(struct mddev *mddev, const char *buf, size_t len)
 	pers->run(mddev);
 	set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
 	if (!mddev->thread)
-		md_update_sb(mddev, 1);
+		md_p2p_update_sb(mddev, 1);
 	sysfs_notify_dirent_safe(mddev->sysfs_level);
-	md_new_event();
+	md_p2p_new_event();
 	rv = len;
 out_unlock:
 	mddev_unlock_and_resume(mddev);
@@ -4100,9 +4109,9 @@ new_level_store(struct mddev *mddev, const char *buf, size_t len)
 		return err;
 
 	mddev->new_level = n;
-	md_update_sb(mddev, 1);
+	md_p2p_update_sb(mddev, 1);
 
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return len;
 }
 static struct md_sysfs_entry md_new_level =
@@ -4148,7 +4157,7 @@ layout_store(struct mddev *mddev, const char *buf, size_t len)
 		if (mddev->reshape_position == MaxSector)
 			mddev->layout = n;
 	}
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err ?: len;
 }
 static struct md_sysfs_entry md_layout =
@@ -4203,7 +4212,7 @@ raid_disks_store(struct mddev *mddev, const char *buf, size_t len)
 	} else
 		mddev->raid_disks = n;
 out_unlock:
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err ? err : len;
 }
 static struct md_sysfs_entry md_raid_disks =
@@ -4257,7 +4266,7 @@ chunk_size_store(struct mddev *mddev, const char *buf, size_t len)
 		if (mddev->reshape_position == MaxSector)
 			mddev->chunk_sectors = n >> 9;
 	}
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err ?: len;
 }
 static struct md_sysfs_entry md_chunk_size =
@@ -4298,7 +4307,7 @@ resync_start_store(struct mddev *mddev, const char *buf, size_t len)
 		if (mddev->pers)
 			set_bit(MD_SB_CHANGE_CLEAN, &mddev->sb_flags);
 	}
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err ?: len;
 }
 static struct md_sysfs_entry md_resync_start =
@@ -4399,7 +4408,7 @@ array_state_show(struct mddev *mddev, char *page)
 	return sprintf(page, "%s\n", array_states[st]);
 }
 
-static int do_md_stop(struct mddev *mddev, int ro);
+static int do_md_p2p_stop(struct mddev *mddev, int ro);
 static int md_set_readonly(struct mddev *mddev);
 static int restart_array(struct mddev *mddev);
 
@@ -4441,7 +4450,7 @@ array_state_store(struct mddev *mddev, const char *buf, size_t len)
 		if (st == active) {
 			restart_array(mddev);
 			clear_bit(MD_SB_CHANGE_PENDING, &mddev->sb_flags);
-			md_wakeup_thread(mddev->thread);
+			md_p2p_wakeup_thread(mddev->thread);
 			wake_up(&mddev->sb_wait);
 		} else /* st == clean */ {
 			restart_array(mddev);
@@ -4461,10 +4470,10 @@ array_state_store(struct mddev *mddev, const char *buf, size_t len)
 	case inactive:
 		/* stop an active array, return 0 otherwise */
 		if (mddev->pers)
-			err = do_md_stop(mddev, 2);
+			err = do_md_p2p_stop(mddev, 2);
 		break;
 	case clear:
-		err = do_md_stop(mddev, 0);
+		err = do_md_p2p_stop(mddev, 0);
 		break;
 	case readonly:
 		if (mddev->pers)
@@ -4472,7 +4481,7 @@ array_state_store(struct mddev *mddev, const char *buf, size_t len)
 		else {
 			mddev->ro = MD_RDONLY;
 			set_disk_ro(mddev->gendisk, 1);
-			err = do_md_run(mddev);
+			err = do_md_p2p_run(mddev);
 		}
 		break;
 	case read_auto:
@@ -4487,7 +4496,7 @@ array_state_store(struct mddev *mddev, const char *buf, size_t len)
 			}
 		} else {
 			mddev->ro = MD_AUTO_READ;
-			err = do_md_run(mddev);
+			err = do_md_p2p_run(mddev);
 		}
 		break;
 	case clean:
@@ -4513,7 +4522,7 @@ array_state_store(struct mddev *mddev, const char *buf, size_t len)
 		} else {
 			mddev->ro = MD_RDWR;
 			set_disk_ro(mddev->gendisk, 0);
-			err = do_md_run(mddev);
+			err = do_md_p2p_run(mddev);
 		}
 		break;
 	default:
@@ -4526,7 +4535,7 @@ array_state_store(struct mddev *mddev, const char *buf, size_t len)
 			mddev->hold_active = 0;
 		sysfs_notify_dirent_safe(mddev->sysfs_state);
 	}
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 
 	if (st == readonly || st == read_auto || st == inactive ||
 	    (err && st == clear))
@@ -4625,7 +4634,7 @@ new_dev_store(struct mddev *mddev, const char *buf, size_t len)
 		export_rdev(rdev, mddev);
 	mddev_unlock_and_resume(mddev);
 	if (!err)
-		md_new_event();
+		md_p2p_new_event();
 	return err ? err : len;
 }
 
@@ -4665,7 +4674,7 @@ bitmap_store(struct mddev *mddev, const char *buf, size_t len)
 	}
 	mddev->bitmap_ops->unplug(mddev, true); /* flush the bits to disk */
 out:
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return len;
 }
 
@@ -4699,7 +4708,7 @@ size_store(struct mddev *mddev, const char *buf, size_t len)
 	if (mddev->pers) {
 		err = update_size(mddev, sectors);
 		if (err == 0)
-			md_update_sb(mddev, 1);
+			md_p2p_update_sb(mddev, 1);
 	} else {
 		if (mddev->dev_sectors == 0 ||
 		    mddev->dev_sectors > sectors)
@@ -4707,7 +4716,7 @@ size_store(struct mddev *mddev, const char *buf, size_t len)
 		else
 			err = -ENOSPC;
 	}
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err ? err : len;
 }
 
@@ -4791,7 +4800,7 @@ metadata_store(struct mddev *mddev, const char *buf, size_t len)
 	mddev->external = 0;
 	err = 0;
 out_unlock:
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err ?: len;
 }
 
@@ -4888,18 +4897,18 @@ static void stop_sync_thread(struct mddev *mddev, bool locked)
 
 	if (!test_bit(MD_RECOVERY_RUNNING, &mddev->recovery)) {
 		if (!locked)
-			mddev_unlock(mddev);
+			md_p2p_mddev_unlock(mddev);
 		return;
 	}
 
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 
 	set_bit(MD_RECOVERY_INTR, &mddev->recovery);
 	/*
 	 * Thread might be blocked waiting for metadata update which will now
 	 * never happen
 	 */
-	md_wakeup_thread_directly(mddev->sync_thread);
+	md_p2p_wakeup_thread_directly(mddev->sync_thread);
 	if (work_pending(&mddev->sync_work))
 		flush_work(&mddev->sync_work);
 
@@ -4912,34 +4921,34 @@ static void stop_sync_thread(struct mddev *mddev, bool locked)
 		mddev_lock_nointr(mddev);
 }
 
-void md_idle_sync_thread(struct mddev *mddev)
+void md_p2p_idle_sync_thread(struct mddev *mddev)
 {
 	lockdep_assert_held(&mddev->reconfig_mutex);
 
 	clear_bit(MD_RECOVERY_FROZEN, &mddev->recovery);
 	stop_sync_thread(mddev, true);
 }
-EXPORT_SYMBOL_GPL(md_idle_sync_thread);
+EXPORT_SYMBOL_GPL(md_p2p_idle_sync_thread);
 
-void md_frozen_sync_thread(struct mddev *mddev)
+void md_p2p_frozen_sync_thread(struct mddev *mddev)
 {
 	lockdep_assert_held(&mddev->reconfig_mutex);
 
 	set_bit(MD_RECOVERY_FROZEN, &mddev->recovery);
 	stop_sync_thread(mddev, true);
 }
-EXPORT_SYMBOL_GPL(md_frozen_sync_thread);
+EXPORT_SYMBOL_GPL(md_p2p_frozen_sync_thread);
 
-void md_unfrozen_sync_thread(struct mddev *mddev)
+void md_p2p_unfrozen_sync_thread(struct mddev *mddev)
 {
 	lockdep_assert_held(&mddev->reconfig_mutex);
 
 	clear_bit(MD_RECOVERY_FROZEN, &mddev->recovery);
 	set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-	md_wakeup_thread(mddev->thread);
+	md_p2p_wakeup_thread(mddev->thread);
 	sysfs_notify_dirent_safe(mddev->sysfs_action);
 }
-EXPORT_SYMBOL_GPL(md_unfrozen_sync_thread);
+EXPORT_SYMBOL_GPL(md_p2p_unfrozen_sync_thread);
 
 static int mddev_start_reshape(struct mddev *mddev)
 {
@@ -4957,7 +4966,7 @@ static int mddev_start_reshape(struct mddev *mddev)
 			return ret;
 	} else {
 		/*
-		 * If reshape is still in progress, and md_check_recovery() can
+		 * If reshape is still in progress, and md_p2p_check_recovery() can
 		 * continue to reshape, don't restart reshape because data can
 		 * be corrupted for raid456.
 		 */
@@ -4986,7 +4995,7 @@ retry:
 		return ret;
 
 	if (work_busy(&mddev->sync_work)) {
-		mddev_unlock(mddev);
+		md_p2p_mddev_unlock(mddev);
 		goto retry;
 	}
 
@@ -4996,11 +5005,11 @@ retry:
 	if (test_bit(MD_RECOVERY_RUNNING, &mddev->recovery)) {
 		switch (action) {
 		case ACTION_FROZEN:
-			md_frozen_sync_thread(mddev);
+			md_p2p_frozen_sync_thread(mddev);
 			ret = len;
 			goto out;
 		case ACTION_IDLE:
-			md_idle_sync_thread(mddev);
+			md_p2p_idle_sync_thread(mddev);
 			break;
 		case ACTION_RESHAPE:
 		case ACTION_RECOVER:
@@ -5051,16 +5060,16 @@ retry:
 		 * canceling read-auto mode
 		 */
 		mddev->ro = MD_RDWR;
-		md_wakeup_thread(mddev->sync_thread);
+		md_p2p_wakeup_thread(mddev->sync_thread);
 	}
 
 	set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-	md_wakeup_thread(mddev->thread);
+	md_p2p_wakeup_thread(mddev->thread);
 	sysfs_notify_dirent_safe(mddev->sysfs_action);
 	ret = len;
 
 out:
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return ret;
 }
 
@@ -5328,12 +5337,12 @@ suspend_lo_store(struct mddev *mddev, const char *buf, size_t len)
 	if (new != (sector_t)new)
 		return -EINVAL;
 
-	err = mddev_suspend(mddev, true);
+	err = md_p2p_mddev_suspend(mddev, true);
 	if (err)
 		return err;
 
 	WRITE_ONCE(mddev->suspend_lo, new);
-	mddev_resume(mddev);
+	md_p2p_mddev_resume(mddev);
 
 	return len;
 }
@@ -5359,12 +5368,12 @@ suspend_hi_store(struct mddev *mddev, const char *buf, size_t len)
 	if (new != (sector_t)new)
 		return -EINVAL;
 
-	err = mddev_suspend(mddev, true);
+	err = md_p2p_mddev_suspend(mddev, true);
 	if (err)
 		return err;
 
 	WRITE_ONCE(mddev->suspend_hi, new);
-	mddev_resume(mddev);
+	md_p2p_mddev_resume(mddev);
 
 	return len;
 }
@@ -5409,7 +5418,7 @@ reshape_position_store(struct mddev *mddev, const char *buf, size_t len)
 		rdev->new_data_offset = rdev->data_offset;
 	err = 0;
 unlock:
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err ?: len;
 }
 
@@ -5450,7 +5459,7 @@ reshape_direction_store(struct mddev *mddev, const char *buf, size_t len)
 		err =  -EINVAL;
 	else
 		mddev->reshape_backwards = backwards;
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err ?: len;
 }
 
@@ -5480,7 +5489,7 @@ array_size_store(struct mddev *mddev, const char *buf, size_t len)
 
 	/* cluster raid doesn't support change array_sectors */
 	if (mddev_is_clustered(mddev)) {
-		mddev_unlock(mddev);
+		md_p2p_mddev_unlock(mddev);
 		return -EINVAL;
 	}
 
@@ -5506,7 +5515,7 @@ array_size_store(struct mddev *mddev, const char *buf, size_t len)
 			set_capacity_and_notify(mddev->gendisk,
 						mddev->array_sectors);
 	}
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err ?: len;
 }
 
@@ -5762,7 +5771,7 @@ static const struct kobj_type md_ktype = {
 int mdp_major = 0;
 
 /* stack the limit for all rdevs into lim */
-int mddev_stack_rdev_limits(struct mddev *mddev, struct queue_limits *lim,
+int md_p2p_mddev_stack_rdev_limits(struct mddev *mddev, struct queue_limits *lim,
 		unsigned int flags)
 {
 	struct md_rdev *rdev;
@@ -5777,10 +5786,10 @@ int mddev_stack_rdev_limits(struct mddev *mddev, struct queue_limits *lim,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mddev_stack_rdev_limits);
+EXPORT_SYMBOL_GPL(md_p2p_mddev_stack_rdev_limits);
 
 /* apply the extra stacking limits from a new rdev into mddev */
-int mddev_stack_new_rdev(struct mddev *mddev, struct md_rdev *rdev)
+int md_p2p_mddev_stack_new_rdev(struct mddev *mddev, struct md_rdev *rdev)
 {
 	struct queue_limits lim;
 
@@ -5800,10 +5809,10 @@ int mddev_stack_new_rdev(struct mddev *mddev, struct md_rdev *rdev)
 
 	return queue_limits_commit_update(mddev->gendisk->queue, &lim);
 }
-EXPORT_SYMBOL_GPL(mddev_stack_new_rdev);
+EXPORT_SYMBOL_GPL(md_p2p_mddev_stack_new_rdev);
 
 /* update the optimal I/O size after a reshape */
-void mddev_update_io_opt(struct mddev *mddev, unsigned int nr_stripes)
+void md_p2p_mddev_update_io_opt(struct mddev *mddev, unsigned int nr_stripes)
 {
 	struct queue_limits lim;
 
@@ -5811,14 +5820,14 @@ void mddev_update_io_opt(struct mddev *mddev, unsigned int nr_stripes)
 		return;
 
 	/* don't bother updating io_opt if we can't suspend the array */
-	if (mddev_suspend(mddev, false) < 0)
+	if (md_p2p_mddev_suspend(mddev, false) < 0)
 		return;
 	lim = queue_limits_start_update(mddev->gendisk->queue);
 	lim.io_opt = lim.io_min * nr_stripes;
 	queue_limits_commit_update(mddev->gendisk->queue, &lim);
-	mddev_resume(mddev);
+	md_p2p_mddev_resume(mddev);
 }
-EXPORT_SYMBOL_GPL(mddev_update_io_opt);
+EXPORT_SYMBOL_GPL(md_p2p_mddev_update_io_opt);
 
 static void mddev_delayed_delete(struct work_struct *ws)
 {
@@ -5827,13 +5836,13 @@ static void mddev_delayed_delete(struct work_struct *ws)
 	kobject_put(&mddev->kobj);
 }
 
-void md_init_stacking_limits(struct queue_limits *lim)
+void md_p2p_init_stacking_limits(struct queue_limits *lim)
 {
 	blk_set_stacking_limits(lim);
 	lim->features = BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA |
 			BLK_FEAT_IO_STAT | BLK_FEAT_NOWAIT;
 }
-EXPORT_SYMBOL_GPL(md_init_stacking_limits);
+EXPORT_SYMBOL_GPL(md_p2p_init_stacking_limits);
 
 struct mddev *md_alloc(dev_t dev, char *name)
 {
@@ -6000,12 +6009,12 @@ static void md_safemode_timeout(struct timer_list *t)
 	if (mddev->external)
 		sysfs_notify_dirent_safe(mddev->sysfs_state);
 
-	md_wakeup_thread(mddev->thread);
+	md_p2p_wakeup_thread(mddev->thread);
 }
 
 static int start_dirty_degraded;
 
-int md_run(struct mddev *mddev)
+int md_p2p_run(struct mddev *mddev)
 {
 	int err;
 	struct md_rdev *rdev;
@@ -6242,9 +6251,9 @@ int md_run(struct mddev *mddev)
 	set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
 
 	if (mddev->sb_flags)
-		md_update_sb(mddev, 0);
+		md_p2p_update_sb(mddev, 0);
 
-	md_new_event();
+	md_p2p_new_event();
 	return 0;
 
 bitmap_abort:
@@ -6262,14 +6271,14 @@ exit_bio_set:
 	bioset_exit(&mddev->bio_set);
 	return err;
 }
-EXPORT_SYMBOL_GPL(md_run);
+EXPORT_SYMBOL_GPL(md_p2p_run);
 
-int do_md_run(struct mddev *mddev)
+int do_md_p2p_run(struct mddev *mddev)
 {
 	int err;
 
 	set_bit(MD_NOT_READY, &mddev->flags);
-	err = md_run(mddev);
+	err = md_p2p_run(mddev);
 	if (err)
 		goto out;
 
@@ -6280,12 +6289,12 @@ int do_md_run(struct mddev *mddev)
 	}
 
 	if (mddev_is_clustered(mddev))
-		md_allow_write(mddev);
+		md_p2p_allow_write(mddev);
 
 	/* run start up tasks that require md_thread */
-	md_start(mddev);
+	md_p2p_start(mddev);
 
-	md_wakeup_thread(mddev->sync_thread); /* possibly kick off a reshape */
+	md_p2p_wakeup_thread(mddev->sync_thread); /* possibly kick off a reshape */
 
 	set_capacity_and_notify(mddev->gendisk, mddev->array_sectors);
 	clear_bit(MD_NOT_READY, &mddev->flags);
@@ -6299,7 +6308,7 @@ out:
 	return err;
 }
 
-int md_start(struct mddev *mddev)
+int md_p2p_start(struct mddev *mddev)
 {
 	int ret = 0;
 
@@ -6307,11 +6316,11 @@ int md_start(struct mddev *mddev)
 		set_bit(MD_RECOVERY_WAIT, &mddev->recovery);
 		ret = mddev->pers->start(mddev);
 		clear_bit(MD_RECOVERY_WAIT, &mddev->recovery);
-		md_wakeup_thread(mddev->sync_thread);
+		md_p2p_wakeup_thread(mddev->sync_thread);
 	}
 	return ret;
 }
-EXPORT_SYMBOL_GPL(md_start);
+EXPORT_SYMBOL_GPL(md_p2p_start);
 
 static int restart_array(struct mddev *mddev)
 {
@@ -6349,7 +6358,7 @@ static int restart_array(struct mddev *mddev)
 	pr_debug("md: %s switched to read-write mode.\n", mdname(mddev));
 	/* Kick recovery or resync if necessary */
 	set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-	md_wakeup_thread(mddev->sync_thread);
+	md_p2p_wakeup_thread(mddev->sync_thread);
 	sysfs_notify_dirent_safe(mddev->sysfs_state);
 	return 0;
 }
@@ -6411,7 +6420,7 @@ static void md_clean(struct mddev *mddev)
 	mddev->bitmap_info.nodes = 0;
 }
 
-static void __md_stop_writes(struct mddev *mddev)
+static void __md_p2p_stop_writes(struct mddev *mddev)
 {
 	del_timer_sync(&mddev->safemode_timer);
 
@@ -6428,22 +6437,22 @@ static void __md_stop_writes(struct mddev *mddev)
 		/* mark array as shutdown cleanly */
 		if (!mddev_is_clustered(mddev))
 			mddev->in_sync = 1;
-		md_update_sb(mddev, 1);
+		md_p2p_update_sb(mddev, 1);
 	}
 	/* disable policy to guarantee rdevs free resources for serialization */
 	mddev->serialize_policy = 0;
 	mddev_destroy_serial_pool(mddev, NULL);
 }
 
-void md_stop_writes(struct mddev *mddev)
+void md_p2p_stop_writes(struct mddev *mddev)
 {
 	mddev_lock_nointr(mddev);
 	set_bit(MD_RECOVERY_FROZEN, &mddev->recovery);
 	stop_sync_thread(mddev, true);
-	__md_stop_writes(mddev);
-	mddev_unlock(mddev);
+	__md_p2p_stop_writes(mddev);
+	md_p2p_mddev_unlock(mddev);
 }
-EXPORT_SYMBOL_GPL(md_stop_writes);
+EXPORT_SYMBOL_GPL(md_p2p_stop_writes);
 
 static void mddev_detach(struct mddev *mddev)
 {
@@ -6452,14 +6461,14 @@ static void mddev_detach(struct mddev *mddev)
 		mddev->pers->quiesce(mddev, 1);
 		mddev->pers->quiesce(mddev, 0);
 	}
-	md_unregister_thread(mddev, &mddev->thread);
+	md_p2p_unregister_thread(mddev, &mddev->thread);
 
 	/* the unplug fn references 'conf' */
 	if (!mddev_is_dm(mddev))
 		blk_sync_queue(mddev->gendisk->queue);
 }
 
-static void __md_stop(struct mddev *mddev)
+static void __md_p2p_stop(struct mddev *mddev)
 {
 	struct md_personality *pers = mddev->pers;
 
@@ -6481,18 +6490,18 @@ static void __md_stop(struct mddev *mddev)
 	bioset_exit(&mddev->io_clone_set);
 }
 
-void md_stop(struct mddev *mddev)
+void md_p2p_stop(struct mddev *mddev)
 {
 	lockdep_assert_held(&mddev->reconfig_mutex);
 
 	/* stop the array and free an attached data structures.
 	 * This is called from dm-raid
 	 */
-	__md_stop_writes(mddev);
-	__md_stop(mddev);
+	__md_p2p_stop_writes(mddev);
+	__md_p2p_stop(mddev);
 }
 
-EXPORT_SYMBOL_GPL(md_stop);
+EXPORT_SYMBOL_GPL(md_p2p_stop);
 
 /* ensure 'mddev->pers' exist before calling md_set_readonly() */
 static int md_set_readonly(struct mddev *mddev)
@@ -6519,7 +6528,7 @@ static int md_set_readonly(struct mddev *mddev)
 		goto out;
 	}
 
-	__md_stop_writes(mddev);
+	__md_p2p_stop_writes(mddev);
 
 	if (mddev->ro == MD_RDONLY) {
 		err  = -ENXIO;
@@ -6543,7 +6552,7 @@ out:
  *   0 - completely stop and dis-assemble array
  *   2 - stop but do not disassemble array
  */
-static int do_md_stop(struct mddev *mddev, int mode)
+static int do_md_p2p_stop(struct mddev *mddev, int mode)
 {
 	struct gendisk *disk = mddev->gendisk;
 	struct md_rdev *rdev;
@@ -6569,8 +6578,8 @@ static int do_md_stop(struct mddev *mddev, int mode)
 		if (!md_is_rdwr(mddev))
 			set_disk_ro(disk, 0);
 
-		__md_stop_writes(mddev);
-		__md_stop(mddev);
+		__md_p2p_stop_writes(mddev);
+		__md_p2p_stop(mddev);
 
 		/* tell userspace to handle 'inactive' */
 		sysfs_notify_dirent_safe(mddev->sysfs_state);
@@ -6606,7 +6615,7 @@ static int do_md_stop(struct mddev *mddev, int mode)
 		if (mddev->hold_active == UNTIL_STOP)
 			mddev->hold_active = 0;
 	}
-	md_new_event();
+	md_p2p_new_event();
 	sysfs_notify_dirent_safe(mddev->sysfs_state);
 	return 0;
 }
@@ -6627,10 +6636,10 @@ static void autorun_array(struct mddev *mddev)
 	}
 	pr_cont("\n");
 
-	err = do_md_run(mddev);
+	err = do_md_p2p_run(mddev);
 	if (err) {
-		pr_warn("md: do_md_run() returned %d\n", err);
-		do_md_stop(mddev, 0);
+		pr_warn("md: do_md_p2p_run() returned %d\n", err);
+		do_md_p2p_stop(mddev, 0);
 	}
 }
 
@@ -6836,7 +6845,7 @@ static int get_disk_info(struct mddev *mddev, void __user * arg)
 		return -EFAULT;
 
 	rcu_read_lock();
-	rdev = md_find_rdev_nr_rcu(mddev, info.number);
+	rdev = md_p2p_find_rdev_nr_rcu(mddev, info.number);
 	if (rdev) {
 		info.major = MAJOR(rdev->bdev->bd_dev);
 		info.minor = MINOR(rdev->bdev->bd_dev);
@@ -6989,7 +6998,7 @@ int md_add_new_disk(struct mddev *mddev, struct mdu_disk_info_s *info)
 				set_bit(Candidate, &rdev->flags);
 			else if (info->state & (1 << MD_DISK_CLUSTER_ADD)) {
 				/* --add initiated by this node */
-				err = md_cluster_ops->add_new_disk(mddev, rdev);
+				err = md_p2p_cluster_ops->add_new_disk(mddev, rdev);
 				if (err) {
 					export_rdev(rdev, mddev);
 					return err;
@@ -7006,14 +7015,14 @@ int md_add_new_disk(struct mddev *mddev, struct mdu_disk_info_s *info)
 		if (mddev_is_clustered(mddev)) {
 			if (info->state & (1 << MD_DISK_CANDIDATE)) {
 				if (!err) {
-					err = md_cluster_ops->new_disk_ack(mddev,
+					err = md_p2p_cluster_ops->new_disk_ack(mddev,
 						err == 0);
 					if (err)
 						md_kick_rdev_from_array(rdev);
 				}
 			} else {
 				if (err)
-					md_cluster_ops->add_new_disk_cancel(mddev);
+					md_p2p_cluster_ops->add_new_disk_cancel(mddev);
 				else
 					err = add_bound_rdev(rdev);
 			}
@@ -7094,15 +7103,15 @@ static int hot_remove_disk(struct mddev *mddev, dev_t dev)
 
 kick_rdev:
 	if (mddev_is_clustered(mddev)) {
-		if (md_cluster_ops->remove_disk(mddev, rdev))
+		if (md_p2p_cluster_ops->remove_disk(mddev, rdev))
 			goto busy;
 	}
 
 	md_kick_rdev_from_array(rdev);
 	set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
 	if (!mddev->thread)
-		md_update_sb(mddev, 1);
-	md_new_event();
+		md_p2p_update_sb(mddev, 1);
+	md_p2p_new_event();
 
 	return 0;
 busy:
@@ -7167,13 +7176,13 @@ static int hot_add_disk(struct mddev *mddev, dev_t dev)
 
 	set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
 	if (!mddev->thread)
-		md_update_sb(mddev, 1);
+		md_p2p_update_sb(mddev, 1);
 	/*
 	 * Kick recovery, maybe this spare has to be added to the
 	 * array immediately.
 	 */
 	set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-	md_new_event();
+	md_p2p_new_event();
 	return 0;
 
 abort_export:
@@ -7354,7 +7363,7 @@ int md_set_array_info(struct mddev *mddev, struct mdu_array_info_s *info)
 	return 0;
 }
 
-void md_set_array_sectors(struct mddev *mddev, sector_t array_sectors)
+void md_p2p_set_array_sectors(struct mddev *mddev, sector_t array_sectors)
 {
 	lockdep_assert_held(&mddev->reconfig_mutex);
 
@@ -7363,7 +7372,7 @@ void md_set_array_sectors(struct mddev *mddev, sector_t array_sectors)
 
 	mddev->array_sectors = array_sectors;
 }
-EXPORT_SYMBOL(md_set_array_sectors);
+EXPORT_SYMBOL(md_p2p_set_array_sectors);
 
 static int update_size(struct mddev *mddev, sector_t num_sectors)
 {
@@ -7399,7 +7408,7 @@ static int update_size(struct mddev *mddev, sector_t num_sectors)
 	rv = mddev->pers->resize(mddev, num_sectors);
 	if (!rv) {
 		if (mddev_is_clustered(mddev))
-			md_cluster_ops->update_size(mddev, old_dev_sectors);
+			md_p2p_cluster_ops->update_size(mddev, old_dev_sectors);
 		else if (!mddev_is_dm(mddev))
 			set_capacity_and_notify(mddev->gendisk,
 						mddev->array_sectors);
@@ -7555,15 +7564,15 @@ static int update_array_info(struct mddev *mddev, mdu_array_info_t *info)
 
 			if (mddev->bitmap_info.nodes) {
 				/* hold PW on all the bitmap lock */
-				if (md_cluster_ops->lock_all_bitmaps(mddev) <= 0) {
+				if (md_p2p_cluster_ops->lock_all_bitmaps(mddev) <= 0) {
 					pr_warn("md: can't change bitmap to none since the array is in use by more than one node\n");
 					rv = -EPERM;
-					md_cluster_ops->unlock_all_bitmaps(mddev);
+					md_p2p_cluster_ops->unlock_all_bitmaps(mddev);
 					goto err;
 				}
 
 				mddev->bitmap_info.nodes = 0;
-				md_cluster_ops->leave(mddev);
+				md_p2p_cluster_ops->leave(mddev);
 				module_put(md_cluster_mod);
 				mddev->safemode_delay = DEFAULT_SAFEMODE_DELAY;
 			}
@@ -7571,7 +7580,7 @@ static int update_array_info(struct mddev *mddev, mdu_array_info_t *info)
 			mddev->bitmap_info.offset = 0;
 		}
 	}
-	md_update_sb(mddev, 1);
+	md_p2p_update_sb(mddev, 1);
 	return rv;
 err:
 	return rv;
@@ -7586,11 +7595,11 @@ static int set_disk_faulty(struct mddev *mddev, dev_t dev)
 		return -ENODEV;
 
 	rcu_read_lock();
-	rdev = md_find_rdev_rcu(mddev, dev);
+	rdev = md_p2p_find_rdev_rcu(mddev, dev);
 	if (!rdev)
 		err =  -ENODEV;
 	else {
-		md_error(mddev, rdev);
+		md_p2p_error(mddev, rdev);
 		if (test_bit(MD_BROKEN, &mddev->flags))
 			err = -EBUSY;
 	}
@@ -7779,7 +7788,7 @@ static int md_ioctl(struct block_device *bdev, blk_mode_t mode,
 		goto unlock;
 
 	case STOP_ARRAY:
-		err = do_md_stop(mddev, 0);
+		err = do_md_p2p_stop(mddev, 0);
 		goto unlock;
 
 	case STOP_ARRAY_RO:
@@ -7822,12 +7831,12 @@ static int md_ioctl(struct block_device *bdev, blk_mode_t mode,
 		mddev->ro = MD_RDWR;
 		sysfs_notify_dirent_safe(mddev->sysfs_state);
 		set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-		/* mddev_unlock will wake thread */
+		/* md_p2p_mddev_unlock will wake thread */
 		/* If a device failed while we were read-only, we
 		 * need to make sure the metadata is updated now.
 		 */
 		if (test_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags)) {
-			mddev_unlock(mddev);
+			md_p2p_mddev_unlock(mddev);
 			wait_event(mddev->sb_wait,
 				   !test_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags) &&
 				   !test_bit(MD_SB_CHANGE_PENDING, &mddev->sb_flags));
@@ -7848,7 +7857,7 @@ static int md_ioctl(struct block_device *bdev, blk_mode_t mode,
 
 	case CLUSTERED_DISK_NACK:
 		if (mddev_is_clustered(mddev))
-			md_cluster_ops->new_disk_ack(mddev, false);
+			md_p2p_cluster_ops->new_disk_ack(mddev, false);
 		else
 			err = -EINVAL;
 		goto unlock;
@@ -7858,7 +7867,7 @@ static int md_ioctl(struct block_device *bdev, blk_mode_t mode,
 		goto unlock;
 
 	case RUN_ARRAY:
-		err = do_md_run(mddev);
+		err = do_md_p2p_run(mddev);
 		goto unlock;
 
 	case SET_BITMAP_FILE:
@@ -7876,7 +7885,7 @@ unlock:
 		mddev->hold_active = 0;
 
 	md_ioctl_need_suspend(cmd) ? mddev_unlock_and_resume(mddev) :
-				     mddev_unlock(mddev);
+				     md_p2p_mddev_unlock(mddev);
 
 out:
 	if (cmd == STOP_ARRAY_RO || (err && cmd == STOP_ARRAY))
@@ -7919,7 +7928,7 @@ static int md_set_read_only(struct block_device *bdev, bool ro)
 
 	/*
 	 * Transitioning to read-auto need only happen for arrays that call
-	 * md_write_start and which are not ready for writes yet.
+	 * md_p2p_write_start and which are not ready for writes yet.
 	 */
 	if (!ro && mddev->ro == MD_RDONLY && mddev->pers) {
 		err = restart_array(mddev);
@@ -7929,7 +7938,7 @@ static int md_set_read_only(struct block_device *bdev, bool ro)
 	}
 
 out_unlock:
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err;
 }
 
@@ -8051,7 +8060,7 @@ static int md_thread(void *arg)
 	return 0;
 }
 
-static void md_wakeup_thread_directly(struct md_thread __rcu *thread)
+static void md_p2p_wakeup_thread_directly(struct md_thread __rcu *thread)
 {
 	struct md_thread *t;
 
@@ -8062,7 +8071,7 @@ static void md_wakeup_thread_directly(struct md_thread __rcu *thread)
 	rcu_read_unlock();
 }
 
-void md_wakeup_thread(struct md_thread __rcu *thread)
+void md_p2p_wakeup_thread(struct md_thread __rcu *thread)
 {
 	struct md_thread *t;
 
@@ -8076,9 +8085,9 @@ void md_wakeup_thread(struct md_thread __rcu *thread)
 	}
 	rcu_read_unlock();
 }
-EXPORT_SYMBOL(md_wakeup_thread);
+EXPORT_SYMBOL(md_p2p_wakeup_thread);
 
-struct md_thread *md_register_thread(void (*run) (struct md_thread *),
+struct md_thread *md_p2p_register_thread(void (*run) (struct md_thread *),
 		struct mddev *mddev, const char *name)
 {
 	struct md_thread *thread;
@@ -8102,9 +8111,9 @@ struct md_thread *md_register_thread(void (*run) (struct md_thread *),
 	}
 	return thread;
 }
-EXPORT_SYMBOL(md_register_thread);
+EXPORT_SYMBOL(md_p2p_register_thread);
 
-void md_unregister_thread(struct mddev *mddev, struct md_thread __rcu **threadp)
+void md_p2p_unregister_thread(struct mddev *mddev, struct md_thread __rcu **threadp)
 {
 	struct md_thread *thread = rcu_dereference_protected(*threadp,
 					lockdep_is_held(&mddev->reconfig_mutex));
@@ -8119,9 +8128,9 @@ void md_unregister_thread(struct mddev *mddev, struct md_thread __rcu **threadp)
 	kthread_stop(thread->tsk);
 	kfree(thread);
 }
-EXPORT_SYMBOL(md_unregister_thread);
+EXPORT_SYMBOL(md_p2p_unregister_thread);
 
-void md_error(struct mddev *mddev, struct md_rdev *rdev)
+void md_p2p_error(struct mddev *mddev, struct md_rdev *rdev)
 {
 	if (!rdev || test_bit(Faulty, &rdev->flags))
 		return;
@@ -8139,13 +8148,13 @@ void md_error(struct mddev *mddev, struct md_rdev *rdev)
 	set_bit(MD_RECOVERY_INTR, &mddev->recovery);
 	if (!test_bit(MD_BROKEN, &mddev->flags)) {
 		set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-		md_wakeup_thread(mddev->thread);
+		md_p2p_wakeup_thread(mddev->thread);
 	}
 	if (mddev->event_work.func)
 		queue_work(md_misc_wq, &mddev->event_work);
-	md_new_event();
+	md_p2p_new_event();
 }
-EXPORT_SYMBOL(md_error);
+EXPORT_SYMBOL(md_p2p_error);
 
 /* seq_file implementation /proc/mdstat */
 
@@ -8518,7 +8527,7 @@ static const struct proc_ops mdstat_proc_ops = {
 	.proc_poll	= mdstat_poll,
 };
 
-int register_md_personality(struct md_personality *p)
+int md_p2p_register_personality(struct md_personality *p)
 {
 	pr_debug("md: %s personality registered for level %d\n",
 		 p->name, p->level);
@@ -8527,9 +8536,9 @@ int register_md_personality(struct md_personality *p)
 	spin_unlock(&pers_lock);
 	return 0;
 }
-EXPORT_SYMBOL(register_md_personality);
+EXPORT_SYMBOL(md_p2p_register_personality);
 
-int unregister_md_personality(struct md_personality *p)
+int md_p2p_unregister_personality(struct md_personality *p)
 {
 	pr_debug("md: %s personality unregistered\n", p->name);
 	spin_lock(&pers_lock);
@@ -8537,48 +8546,48 @@ int unregister_md_personality(struct md_personality *p)
 	spin_unlock(&pers_lock);
 	return 0;
 }
-EXPORT_SYMBOL(unregister_md_personality);
+EXPORT_SYMBOL(md_p2p_unregister_personality);
 
-int register_md_cluster_operations(const struct md_cluster_operations *ops,
+int md_p2p_register_cluster_operations(const struct md_cluster_operations *ops,
 				   struct module *module)
 {
 	int ret = 0;
 	spin_lock(&pers_lock);
-	if (md_cluster_ops != NULL)
+	if (md_p2p_cluster_ops != NULL)
 		ret = -EALREADY;
 	else {
-		md_cluster_ops = ops;
+		md_p2p_cluster_ops = ops;
 		md_cluster_mod = module;
 	}
 	spin_unlock(&pers_lock);
 	return ret;
 }
-EXPORT_SYMBOL(register_md_cluster_operations);
+EXPORT_SYMBOL(md_p2p_register_cluster_operations);
 
-int unregister_md_cluster_operations(void)
+int md_p2p_unregister_cluster_operations(void)
 {
 	spin_lock(&pers_lock);
-	md_cluster_ops = NULL;
+	md_p2p_cluster_ops = NULL;
 	spin_unlock(&pers_lock);
 	return 0;
 }
-EXPORT_SYMBOL(unregister_md_cluster_operations);
+EXPORT_SYMBOL(md_p2p_unregister_cluster_operations);
 
 int md_setup_cluster(struct mddev *mddev, int nodes)
 {
 	int ret;
-	if (!md_cluster_ops)
+	if (!md_p2p_cluster_ops)
 		request_module("md-cluster");
 	spin_lock(&pers_lock);
 	/* ensure module won't be unloaded */
-	if (!md_cluster_ops || !try_module_get(md_cluster_mod)) {
+	if (!md_p2p_cluster_ops || !try_module_get(md_cluster_mod)) {
 		pr_warn("can't find md-cluster module or get its reference.\n");
 		spin_unlock(&pers_lock);
 		return -ENOENT;
 	}
 	spin_unlock(&pers_lock);
 
-	ret = md_cluster_ops->join(mddev, nodes);
+	ret = md_p2p_cluster_ops->join(mddev, nodes);
 	if (!ret)
 		mddev->safemode_delay = 0;
 	return ret;
@@ -8586,9 +8595,9 @@ int md_setup_cluster(struct mddev *mddev, int nodes)
 
 void md_cluster_stop(struct mddev *mddev)
 {
-	if (!md_cluster_ops)
+	if (!md_p2p_cluster_ops)
 		return;
-	md_cluster_ops->leave(mddev);
+	md_p2p_cluster_ops->leave(mddev);
 	module_put(md_cluster_mod);
 }
 
@@ -8639,7 +8648,7 @@ static int is_mddev_idle(struct mddev *mddev, int init)
 	return idle;
 }
 
-void md_done_sync(struct mddev *mddev, int blocks, int ok)
+void md_p2p_done_sync(struct mddev *mddev, int blocks, int ok)
 {
 	/* another "blocks" (512byte) blocks have been synced */
 	atomic_sub(blocks, &mddev->recovery_active);
@@ -8647,20 +8656,20 @@ void md_done_sync(struct mddev *mddev, int blocks, int ok)
 	if (!ok) {
 		set_bit(MD_RECOVERY_INTR, &mddev->recovery);
 		set_bit(MD_RECOVERY_ERROR, &mddev->recovery);
-		md_wakeup_thread(mddev->thread);
+		md_p2p_wakeup_thread(mddev->thread);
 		// stop recovery, signal do_sync ....
 	}
 }
-EXPORT_SYMBOL(md_done_sync);
+EXPORT_SYMBOL(md_p2p_done_sync);
 
-/* md_write_start(mddev, bi)
+/* md_p2p_write_start(mddev, bi)
  * If we need to update some array metadata (e.g. 'active' flag
  * in superblock) before writing, schedule a superblock update
  * and wait for it to complete.
  * A return value of 'false' means that the write wasn't recorded
  * and cannot proceed as the array is being suspend.
  */
-void md_write_start(struct mddev *mddev, struct bio *bi)
+void md_p2p_write_start(struct mddev *mddev, struct bio *bi)
 {
 	int did_change = 0;
 
@@ -8672,8 +8681,8 @@ void md_write_start(struct mddev *mddev, struct bio *bi)
 		/* need to switch to read/write */
 		mddev->ro = MD_RDWR;
 		set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-		md_wakeup_thread(mddev->thread);
-		md_wakeup_thread(mddev->sync_thread);
+		md_p2p_wakeup_thread(mddev->thread);
+		md_p2p_wakeup_thread(mddev->sync_thread);
 		did_change = 1;
 	}
 	rcu_read_lock();
@@ -8688,7 +8697,7 @@ void md_write_start(struct mddev *mddev, struct bio *bi)
 			mddev->in_sync = 0;
 			set_bit(MD_SB_CHANGE_CLEAN, &mddev->sb_flags);
 			set_bit(MD_SB_CHANGE_PENDING, &mddev->sb_flags);
-			md_wakeup_thread(mddev->thread);
+			md_p2p_wakeup_thread(mddev->thread);
 			did_change = 1;
 		}
 		spin_unlock(&mddev->lock);
@@ -8701,31 +8710,31 @@ void md_write_start(struct mddev *mddev, struct bio *bi)
 	wait_event(mddev->sb_wait,
 		   !test_bit(MD_SB_CHANGE_PENDING, &mddev->sb_flags));
 }
-EXPORT_SYMBOL(md_write_start);
+EXPORT_SYMBOL(md_p2p_write_start);
 
-/* md_write_inc can only be called when md_write_start() has
+/* md_p2p_write_inc can only be called when md_p2p_write_start() has
  * already been called at least once of the current request.
  * It increments the counter and is useful when a single request
  * is split into several parts.  Each part causes an increment and
- * so needs a matching md_write_end().
- * Unlike md_write_start(), it is safe to call md_write_inc() inside
+ * so needs a matching md_p2p_write_end().
+ * Unlike md_p2p_write_start(), it is safe to call md_p2p_write_inc() inside
  * a spinlocked region.
  */
-void md_write_inc(struct mddev *mddev, struct bio *bi)
+void md_p2p_write_inc(struct mddev *mddev, struct bio *bi)
 {
 	if (bio_data_dir(bi) != WRITE)
 		return;
 	WARN_ON_ONCE(mddev->in_sync || !md_is_rdwr(mddev));
 	percpu_ref_get(&mddev->writes_pending);
 }
-EXPORT_SYMBOL(md_write_inc);
+EXPORT_SYMBOL(md_p2p_write_inc);
 
-void md_write_end(struct mddev *mddev)
+void md_p2p_write_end(struct mddev *mddev)
 {
 	percpu_ref_put(&mddev->writes_pending);
 
 	if (mddev->safemode == 2)
-		md_wakeup_thread(mddev->thread);
+		md_p2p_wakeup_thread(mddev->thread);
 	else if (mddev->safemode_delay)
 		/* The roundup() ensures this only performs locking once
 		 * every ->safemode_delay jiffies
@@ -8735,10 +8744,10 @@ void md_write_end(struct mddev *mddev)
 			  mddev->safemode_delay);
 }
 
-EXPORT_SYMBOL(md_write_end);
+EXPORT_SYMBOL(md_p2p_write_end);
 
 /* This is used by raid0 and raid10 */
-void md_submit_discard_bio(struct mddev *mddev, struct md_rdev *rdev,
+void md_p2p_submit_discard_bio(struct mddev *mddev, struct md_rdev *rdev,
 			struct bio *bio, sector_t start, sector_t size)
 {
 	struct bio *discard_bio = NULL;
@@ -8752,7 +8761,7 @@ void md_submit_discard_bio(struct mddev *mddev, struct md_rdev *rdev,
 	mddev_trace_remap(mddev, discard_bio, bio->bi_iter.bi_sector);
 	submit_bio_noacct(discard_bio);
 }
-EXPORT_SYMBOL_GPL(md_submit_discard_bio);
+EXPORT_SYMBOL_GPL(md_p2p_submit_discard_bio);
 
 static void md_bitmap_start(struct mddev *mddev,
 			    struct md_io_clone *md_io_clone)
@@ -8815,14 +8824,14 @@ static void md_clone_bio(struct mddev *mddev, struct bio **bio)
 	*bio = clone;
 }
 
-void md_account_bio(struct mddev *mddev, struct bio **bio)
+void md_p2p_account_bio(struct mddev *mddev, struct bio **bio)
 {
 	percpu_ref_get(&mddev->active_io);
 	md_clone_bio(mddev, bio);
 }
-EXPORT_SYMBOL_GPL(md_account_bio);
+EXPORT_SYMBOL_GPL(md_p2p_account_bio);
 
-void md_free_cloned_bio(struct bio *bio)
+void md_p2p_free_cloned_bio(struct bio *bio)
 {
 	struct md_io_clone *md_io_clone = bio->bi_private;
 	struct bio *orig_bio = md_io_clone->orig_bio;
@@ -8840,15 +8849,15 @@ void md_free_cloned_bio(struct bio *bio)
 	bio_put(bio);
 	percpu_ref_put(&mddev->active_io);
 }
-EXPORT_SYMBOL_GPL(md_free_cloned_bio);
+EXPORT_SYMBOL_GPL(md_p2p_free_cloned_bio);
 
-/* md_allow_write(mddev)
+/* md_p2p_allow_write(mddev)
  * Calling this ensures that the array is marked 'active' so that writes
  * may proceed without blocking.  It is important to call this before
  * attempting a GFP_KERNEL allocation while holding the mddev lock.
  * Must be called with mddev_lock held.
  */
-void md_allow_write(struct mddev *mddev)
+void md_p2p_allow_write(struct mddev *mddev)
 {
 	if (!mddev->pers)
 		return;
@@ -8866,7 +8875,7 @@ void md_allow_write(struct mddev *mddev)
 		    mddev->safemode == 0)
 			mddev->safemode = 1;
 		spin_unlock(&mddev->lock);
-		md_update_sb(mddev, 0);
+		md_p2p_update_sb(mddev, 0);
 		sysfs_notify_dirent_safe(mddev->sysfs_state);
 		/* wait for the dirty state to be recorded in the metadata */
 		wait_event(mddev->sb_wait,
@@ -8874,7 +8883,7 @@ void md_allow_write(struct mddev *mddev)
 	} else
 		spin_unlock(&mddev->lock);
 }
-EXPORT_SYMBOL_GPL(md_allow_write);
+EXPORT_SYMBOL_GPL(md_p2p_allow_write);
 
 static sector_t md_sync_max_sectors(struct mddev *mddev,
 				    enum sync_action action)
@@ -8950,7 +8959,7 @@ static sector_t md_sync_position(struct mddev *mddev, enum sync_action action)
 #define SYNC_MARKS	10
 #define	SYNC_MARK_STEP	(3*HZ)
 #define UPDATE_FREQUENCY (5*60*HZ)
-void md_do_sync(struct md_thread *thread)
+void md_p2p_do_sync(struct md_thread *thread)
 {
 	struct mddev *mddev = thread->mddev;
 	struct mddev *mddev2;
@@ -8982,7 +8991,7 @@ void md_do_sync(struct md_thread *thread)
 	}
 
 	if (mddev_is_clustered(mddev)) {
-		ret = md_cluster_ops->resync_start(mddev);
+		ret = md_p2p_cluster_ops->resync_start(mddev);
 		if (ret)
 			goto skip;
 
@@ -9009,7 +9018,7 @@ void md_do_sync(struct md_thread *thread)
 	 *
 	 */
 	if (mddev_is_clustered(mddev))
-		md_cluster_ops->resync_start_notify(mddev);
+		md_p2p_cluster_ops->resync_start_notify(mddev);
 	do {
 		int mddev2_minor = -1;
 		mddev->curr_resync = MD_RESYNC_DELAYED;
@@ -9103,7 +9112,7 @@ void md_do_sync(struct md_thread *thread)
 		mddev->curr_resync = MD_RESYNC_ACTIVE; /* no longer delayed */
 	mddev->curr_resync_completed = j;
 	sysfs_notify_dirent_safe(mddev->sysfs_completed);
-	md_new_event();
+	md_p2p_new_event();
 	update_time = jiffies;
 
 	blk_start_plug(&plug);
@@ -9175,7 +9184,7 @@ void md_do_sync(struct md_thread *thread)
 			/* this is the earliest that rebuild will be
 			 * visible in /proc/mdstat
 			 */
-			md_new_event();
+			md_p2p_new_event();
 
 		if (last_check + window > io_sectors || j == max_sectors)
 			continue;
@@ -9229,7 +9238,7 @@ void md_do_sync(struct md_thread *thread)
 		test_bit(MD_RECOVERY_INTR, &mddev->recovery)
 		? "interrupted" : "done");
 	/*
-	 * this also signals 'finished resyncing' to md_stop
+	 * this also signals 'finished resyncing' to md_p2p_stop
 	 */
 	blk_finish_plug(&plug);
 	wait_event(mddev->recovery_wait, !atomic_read(&mddev->recovery_active));
@@ -9291,8 +9300,8 @@ void md_do_sync(struct md_thread *thread)
 			mddev->pers->size &&
 			!mddev_is_dm(mddev)) {
 		mddev_lock_nointr(mddev);
-		md_set_array_sectors(mddev, mddev->pers->size(mddev, 0, 0));
-		mddev_unlock(mddev);
+		md_p2p_set_array_sectors(mddev, mddev->pers->size(mddev, 0, 0));
+		md_p2p_mddev_unlock(mddev);
 		if (!mddev_is_clustered(mddev))
 			set_capacity_and_notify(mddev->gendisk,
 						mddev->array_sectors);
@@ -9311,10 +9320,10 @@ void md_do_sync(struct md_thread *thread)
 	spin_unlock(&mddev->lock);
 
 	wake_up(&resync_wait);
-	md_wakeup_thread(mddev->thread);
+	md_p2p_wakeup_thread(mddev->thread);
 	return;
 }
-EXPORT_SYMBOL_GPL(md_do_sync);
+EXPORT_SYMBOL_GPL(md_p2p_do_sync);
 
 static bool rdev_removeable(struct md_rdev *rdev)
 {
@@ -9450,7 +9459,7 @@ static int remove_and_add_spares(struct mddev *mddev,
 			sysfs_link_rdev(mddev, rdev);
 			if (!test_bit(Journal, &rdev->flags))
 				spares++;
-			md_new_event();
+			md_p2p_new_event();
 			set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
 		}
 	}
@@ -9497,7 +9506,7 @@ static bool md_choose_sync_action(struct mddev *mddev, int *spares)
 		return true;
 	}
 
-	/* Delay to choose resync/check/repair in md_do_sync(). */
+	/* Delay to choose resync/check/repair in md_p2p_do_sync(). */
 	if (test_bit(MD_RECOVERY_SYNC, &mddev->recovery))
 		return true;
 
@@ -9505,7 +9514,7 @@ static bool md_choose_sync_action(struct mddev *mddev, int *spares)
 	return false;
 }
 
-static void md_start_sync(struct work_struct *ws)
+static void md_p2p_start_sync(struct work_struct *ws)
 {
 	struct mddev *mddev = container_of(ws, struct mddev, sync_work);
 	int spares = 0;
@@ -9519,7 +9528,7 @@ static void md_start_sync(struct work_struct *ws)
 	if (mddev->reshape_position == MaxSector &&
 	    md_spares_need_change(mddev)) {
 		suspend = true;
-		mddev_suspend(mddev, false);
+		md_p2p_mddev_suspend(mddev, false);
 	}
 
 	mddev_lock_nointr(mddev);
@@ -9551,7 +9560,7 @@ static void md_start_sync(struct work_struct *ws)
 	name = test_bit(MD_RECOVERY_RESHAPE, &mddev->recovery) ?
 			"reshape" : "resync";
 	rcu_assign_pointer(mddev->sync_thread,
-			   md_register_thread(md_do_sync, mddev, name));
+			   md_p2p_register_thread(md_p2p_do_sync, mddev, name));
 	if (!mddev->sync_thread) {
 		pr_warn("%s: could not start resync thread...\n",
 			mdname(mddev));
@@ -9559,18 +9568,18 @@ static void md_start_sync(struct work_struct *ws)
 		goto not_running;
 	}
 
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	/*
-	 * md_start_sync was triggered by MD_RECOVERY_NEEDED, so we should
+	 * md_p2p_start_sync was triggered by MD_RECOVERY_NEEDED, so we should
 	 * not set it again. Otherwise, we may cause issue like this one:
 	 *     https://bugzilla.kernel.org/show_bug.cgi?id=218200
-	 * Therefore, use __mddev_resume(mddev, false).
+	 * Therefore, use __md_p2p_mddev_resume(mddev, false).
 	 */
 	if (suspend)
-		__mddev_resume(mddev, false);
-	md_wakeup_thread(mddev->sync_thread);
+		__md_p2p_mddev_resume(mddev, false);
+	md_p2p_wakeup_thread(mddev->sync_thread);
 	sysfs_notify_dirent_safe(mddev->sysfs_action);
-	md_new_event();
+	md_p2p_new_event();
 	return;
 
 not_running:
@@ -9579,15 +9588,15 @@ not_running:
 	clear_bit(MD_RECOVERY_REQUESTED, &mddev->recovery);
 	clear_bit(MD_RECOVERY_CHECK, &mddev->recovery);
 	clear_bit(MD_RECOVERY_RUNNING, &mddev->recovery);
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	/*
-	 * md_start_sync was triggered by MD_RECOVERY_NEEDED, so we should
+	 * md_p2p_start_sync was triggered by MD_RECOVERY_NEEDED, so we should
 	 * not set it again. Otherwise, we may cause issue like this one:
 	 *     https://bugzilla.kernel.org/show_bug.cgi?id=218200
-	 * Therefore, use __mddev_resume(mddev, false).
+	 * Therefore, use __md_p2p_mddev_resume(mddev, false).
 	 */
 	if (suspend)
-		__mddev_resume(mddev, false);
+		__md_p2p_mddev_resume(mddev, false);
 
 	wake_up(&resync_wait);
 	if (test_and_clear_bit(MD_RECOVERY_RECOVER, &mddev->recovery) &&
@@ -9606,7 +9615,7 @@ static void unregister_sync_thread(struct mddev *mddev)
 	if (WARN_ON_ONCE(!mddev->sync_thread))
 		return;
 
-	md_reap_sync_thread(mddev);
+	md_p2p_reap_sync_thread(mddev);
 }
 
 /*
@@ -9631,7 +9640,7 @@ static void unregister_sync_thread(struct mddev *mddev)
  *  5/ If array is degraded, try to add spares devices
  *  6/ If array has spares or is not in-sync, start a resync thread.
  */
-void md_check_recovery(struct mddev *mddev)
+void md_p2p_check_recovery(struct mddev *mddev)
 {
 	if (mddev->bitmap)
 		mddev->bitmap_ops->daemon_work(mddev);
@@ -9688,10 +9697,10 @@ void md_check_recovery(struct mddev *mddev)
 			 * ->spare_active and clear saved_raid_disk
 			 */
 			set_bit(MD_RECOVERY_INTR, &mddev->recovery);
-			md_reap_sync_thread(mddev);
+			md_p2p_reap_sync_thread(mddev);
 
 			/*
-			 * Let md_start_sync() to remove and add rdevs to the
+			 * Let md_p2p_start_sync() to remove and add rdevs to the
 			 * array.
 			 */
 			if (md_spares_need_change(mddev)) {
@@ -9725,7 +9734,7 @@ void md_check_recovery(struct mddev *mddev)
 		}
 
 		if (mddev->sb_flags)
-			md_update_sb(mddev, 0);
+			md_p2p_update_sb(mddev, 0);
 
 		/*
 		 * Never start a new sync thread if MD_RECOVERY_RUNNING is
@@ -9759,19 +9768,19 @@ void md_check_recovery(struct mddev *mddev)
 
 	unlock:
 		wake_up(&mddev->sb_wait);
-		mddev_unlock(mddev);
+		md_p2p_mddev_unlock(mddev);
 	}
 }
-EXPORT_SYMBOL(md_check_recovery);
+EXPORT_SYMBOL(md_p2p_check_recovery);
 
-void md_reap_sync_thread(struct mddev *mddev)
+void md_p2p_reap_sync_thread(struct mddev *mddev)
 {
 	struct md_rdev *rdev;
 	sector_t old_dev_sectors = mddev->dev_sectors;
 	bool is_reshaped = false;
 
 	/* resync has finished, collect result */
-	md_unregister_thread(mddev, &mddev->sync_thread);
+	md_p2p_unregister_thread(mddev, &mddev->sync_thread);
 	atomic_inc(&mddev->sync_seq);
 
 	if (!test_bit(MD_RECOVERY_INTR, &mddev->recovery) &&
@@ -9798,12 +9807,12 @@ void md_reap_sync_thread(struct mddev *mddev)
 		rdev_for_each(rdev, mddev)
 			rdev->saved_raid_disk = -1;
 
-	md_update_sb(mddev, 1);
-	/* MD_SB_CHANGE_PENDING should be cleared by md_update_sb, so we can
+	md_p2p_update_sb(mddev, 1);
+	/* MD_SB_CHANGE_PENDING should be cleared by md_p2p_update_sb, so we can
 	 * call resync_finish here if MD_CLUSTER_RESYNC_LOCKED is set by
 	 * clustered raid */
 	if (test_and_clear_bit(MD_CLUSTER_RESYNC_LOCKED, &mddev->flags))
-		md_cluster_ops->resync_finish(mddev);
+		md_p2p_cluster_ops->resync_finish(mddev);
 	clear_bit(MD_RECOVERY_RUNNING, &mddev->recovery);
 	clear_bit(MD_RECOVERY_DONE, &mddev->recovery);
 	clear_bit(MD_RECOVERY_SYNC, &mddev->recovery);
@@ -9811,34 +9820,34 @@ void md_reap_sync_thread(struct mddev *mddev)
 	clear_bit(MD_RECOVERY_REQUESTED, &mddev->recovery);
 	clear_bit(MD_RECOVERY_CHECK, &mddev->recovery);
 	/*
-	 * We call md_cluster_ops->update_size here because sync_size could
-	 * be changed by md_update_sb, and MD_RECOVERY_RESHAPE is cleared,
+	 * We call md_p2p_cluster_ops->update_size here because sync_size could
+	 * be changed by md_p2p_update_sb, and MD_RECOVERY_RESHAPE is cleared,
 	 * so it is time to update size across cluster.
 	 */
 	if (mddev_is_clustered(mddev) && is_reshaped
 				      && !test_bit(MD_CLOSING, &mddev->flags))
-		md_cluster_ops->update_size(mddev, old_dev_sectors);
+		md_p2p_cluster_ops->update_size(mddev, old_dev_sectors);
 	/* flag recovery needed just to double check */
 	set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
 	sysfs_notify_dirent_safe(mddev->sysfs_completed);
 	sysfs_notify_dirent_safe(mddev->sysfs_action);
-	md_new_event();
+	md_p2p_new_event();
 	if (mddev->event_work.func)
 		queue_work(md_misc_wq, &mddev->event_work);
 	wake_up(&resync_wait);
 }
-EXPORT_SYMBOL(md_reap_sync_thread);
+EXPORT_SYMBOL(md_p2p_reap_sync_thread);
 
-void md_wait_for_blocked_rdev(struct md_rdev *rdev, struct mddev *mddev)
+void md_p2p_wait_for_blocked_rdev(struct md_rdev *rdev, struct mddev *mddev)
 {
 	sysfs_notify_dirent_safe(rdev->sysfs_state);
 	wait_event_timeout(rdev->blocked_wait, !rdev_blocked(rdev),
 			   msecs_to_jiffies(5000));
 	rdev_dec_pending(rdev, mddev);
 }
-EXPORT_SYMBOL(md_wait_for_blocked_rdev);
+EXPORT_SYMBOL(md_p2p_wait_for_blocked_rdev);
 
-void md_finish_reshape(struct mddev *mddev)
+void md_p2p_finish_reshape(struct mddev *mddev)
 {
 	/* called be personality module when reshape completes. */
 	struct md_rdev *rdev;
@@ -9851,12 +9860,12 @@ void md_finish_reshape(struct mddev *mddev)
 		rdev->data_offset = rdev->new_data_offset;
 	}
 }
-EXPORT_SYMBOL(md_finish_reshape);
+EXPORT_SYMBOL(md_p2p_finish_reshape);
 
 /* Bad block management */
 
 /* Returns 1 on success, 0 on failure */
-int rdev_set_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
+int md_p2p_rdev_set_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
 		       int is_new)
 {
 	struct mddev *mddev = rdev->mddev;
@@ -9885,12 +9894,12 @@ int rdev_set_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
 	sysfs_notify_dirent_safe(rdev->sysfs_state);
 	set_mask_bits(&mddev->sb_flags, 0,
 		      BIT(MD_SB_CHANGE_CLEAN) | BIT(MD_SB_CHANGE_PENDING));
-	md_wakeup_thread(rdev->mddev->thread);
+	md_p2p_wakeup_thread(rdev->mddev->thread);
 	return 1;
 }
-EXPORT_SYMBOL_GPL(rdev_set_badblocks);
+EXPORT_SYMBOL_GPL(md_p2p_rdev_set_badblocks);
 
-int rdev_clear_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
+int md_p2p_rdev_clear_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
 			 int is_new)
 {
 	if (is_new)
@@ -9905,7 +9914,7 @@ int rdev_clear_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
 		sysfs_notify_dirent_safe(rdev->sysfs_badblocks);
 	return 1;
 }
-EXPORT_SYMBOL_GPL(rdev_clear_badblocks);
+EXPORT_SYMBOL_GPL(md_p2p_rdev_clear_badblocks);
 
 static int md_notify_reboot(struct notifier_block *this,
 			    unsigned long code, void *x)
@@ -9920,10 +9929,10 @@ static int md_notify_reboot(struct notifier_block *this,
 		spin_unlock(&all_mddevs_lock);
 		if (mddev_trylock(mddev)) {
 			if (mddev->pers)
-				__md_stop_writes(mddev);
+				__md_p2p_stop_writes(mddev);
 			if (mddev->persistent)
 				mddev->safemode = 2;
-			mddev_unlock(mddev);
+			md_p2p_mddev_unlock(mddev);
 		}
 		need_delay = 1;
 		spin_lock(&all_mddevs_lock);
@@ -10047,7 +10056,7 @@ static void check_sb_changes(struct mddev *mddev, struct md_rdev *rdev)
 			if (rdev2->raid_disk == -1 && role != MD_DISK_ROLE_SPARE &&
 			    !(le32_to_cpu(sb->feature_map) &
 			      MD_FEATURE_RESHAPE_ACTIVE) &&
-			    !md_cluster_ops->resync_status_get(mddev)) {
+			    !md_p2p_cluster_ops->resync_status_get(mddev)) {
 				/*
 				 * -1 to make raid1_add_disk() set conf->fullsync
 				 * to 1. This could avoid skipping sync when the
@@ -10064,7 +10073,7 @@ static void check_sb_changes(struct mddev *mddev, struct md_rdev *rdev)
 				/* wakeup mddev->thread here, so array could
 				 * perform resync with the new activated disk */
 				set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-				md_wakeup_thread(mddev->thread);
+				md_p2p_wakeup_thread(mddev->thread);
 			}
 			/* device faulty
 			 * We just want to do the minimum to mark the disk
@@ -10073,7 +10082,7 @@ static void check_sb_changes(struct mddev *mddev, struct md_rdev *rdev)
 			 */
 			if (role == MD_DISK_ROLE_FAULTY ||
 			    role == MD_DISK_ROLE_JOURNAL) {
-				md_error(mddev, rdev2);
+				md_p2p_error(mddev, rdev2);
 				clear_bit(Blocked, &rdev2->flags);
 			}
 		}
@@ -10160,7 +10169,7 @@ static int read_rdev(struct mddev *mddev, struct md_rdev *rdev)
 	return 0;
 }
 
-void md_reload_sb(struct mddev *mddev, int nr)
+void md_p2p_reload_sb(struct mddev *mddev, int nr)
 {
 	struct md_rdev *rdev = NULL, *iter;
 	int err;
@@ -10190,7 +10199,7 @@ void md_reload_sb(struct mddev *mddev, int nr)
 			read_rdev(mddev, rdev);
 	}
 }
-EXPORT_SYMBOL(md_reload_sb);
+EXPORT_SYMBOL(md_p2p_reload_sb);
 
 #ifndef MODULE
 

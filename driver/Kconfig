@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Kconfig for MD RAID with P2PDMA support (md-p2p)
+#
+
+config BLK_DEV_MD_P2P
+	tristate "RAID support with P2PDMA (md-p2p)"
+	depends on BLK_DEV && PCI_P2PDMA
+	select RAID6_PQ
+	select ASYNC_MEMCPY
+	select ASYNC_XOR
+	select ASYNC_PQ
+	select ASYNC_RAID6_RECOV
+	help
+	  This driver provides support for Multiple Device (MD) RAID arrays
+	  with PCI Peer-to-Peer DMA (P2PDMA) support. P2PDMA enables direct
+	  memory transfers between PCIe devices without CPU involvement,
+	  significantly improving performance for high-speed NVMe RAID scenarios.
+
+	  The md-p2p driver supports all standard RAID levels:
+	  - RAID-0 (striping) for maximum performance
+	  - RAID-1 (mirroring) for redundancy
+	  - RAID-10 (mirrored striping)
+	  - RAID-4/5/6 with parity
+	  - Linear mode (append)
+
+	  P2PDMA Requirements:
+	  - PCIe devices supporting P2PDMA (e.g., NVMe with CMB)
+	  - Devices behind the same PCIe root complex
+	  - Kernel with CONFIG_PCI_P2PDMA=y
+
+	  Use Cases:
+	  - High-performance NVMe RAID with direct PCIe-to-PCIe transfers
+	  - GPU-Direct Storage for low-latency access
+	  - Research and development of P2PDMA optimizations
+
+	  Note: This driver uses "-p2p" suffix for module names to avoid
+	  conflicts with kernel's built-in MD modules (md-mod, raid0, etc.).
+
+	  To compile this as modules, choose M here: the modules will be
+	  called md-p2p.ko, raid0-p2p.ko, raid1-p2p.ko, raid10-p2p.ko,
+	  raid456-p2p.ko, and linear-p2p.ko.
+
+	  If unsure, say N. Use built-in MD driver if P2PDMA is not required.
+
+config MD_P2P_LINEAR
+	tristate "Linear (append) mode with P2PDMA"
+	depends on BLK_DEV_MD_P2P
+	help
+	  Linear mode (append) with P2PDMA support. This creates a single
+	  logical volume by appending multiple devices end-to-end with
+	  direct PCIe-to-PCIe transfer capability.
+
+	  Module name: linear-p2p.ko
+
+config MD_P2P_RAID0
+	tristate "RAID-0 (striping) mode with P2PDMA"
+	depends on BLK_DEV_MD_P2P
+	help
+	  RAID-0 (striping) with P2PDMA support. Provides maximum performance
+	  by striping data across multiple devices with direct PCIe transfers.
+
+	  Module name: raid0-p2p.ko
+
+config MD_P2P_RAID1
+	tristate "RAID-1 (mirroring) mode with P2PDMA"
+	depends on BLK_DEV_MD_P2P
+	help
+	  RAID-1 (mirroring) with P2PDMA support. Provides data redundancy
+	  by mirroring data across devices with direct PCIe transfers.
+
+	  Module name: raid1-p2p.ko
+
+config MD_P2P_RAID10
+	tristate "RAID-10 (mirrored striping) mode with P2PDMA"
+	depends on BLK_DEV_MD_P2P
+	help
+	  RAID-10 (mirrored striping) with P2PDMA support. Combines RAID-0
+	  and RAID-1 for both performance and redundancy with direct PCIe
+	  transfers.
+
+	  Module name: raid10-p2p.ko
+
+config MD_P2P_RAID456
+	tristate "RAID-4/5/6 mode with P2PDMA"
+	depends on BLK_DEV_MD_P2P
+	select RAID6_PQ
+	select ASYNC_RAID6_RECOV
+	help
+	  RAID-4/5/6 with P2PDMA support. Provides data redundancy using
+	  parity with direct PCIe transfers for improved performance.
+
+	  - RAID-4: Block-level striping with dedicated parity disk
+	  - RAID-5: Block-level striping with distributed parity
+	  - RAID-6: Block-level striping with double distributed parity
+
+	  Module name: raid456-p2p.ko

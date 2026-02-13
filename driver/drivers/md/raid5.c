@@ -196,7 +196,7 @@ static void raid5_wakeup_stripe_thread(struct stripe_head *sh)
 	}
 
 	if (conf->worker_cnt_per_group == 0) {
-		md_wakeup_thread(conf->mddev->thread);
+		md_p2p_wakeup_thread(conf->mddev->thread);
 		return;
 	}
 
@@ -269,13 +269,13 @@ static void do_release_stripe(struct r5conf *conf, struct stripe_head *sh,
 				return;
 			}
 		}
-		md_wakeup_thread(conf->mddev->thread);
+		md_p2p_wakeup_thread(conf->mddev->thread);
 	} else {
 		BUG_ON(stripe_operations_active(sh));
 		if (test_and_clear_bit(STRIPE_PREREAD_ACTIVE, &sh->state))
 			if (atomic_dec_return(&conf->preread_active_stripes)
 			    < IO_THRESHOLD)
-				md_wakeup_thread(conf->mddev->thread);
+				md_p2p_wakeup_thread(conf->mddev->thread);
 		atomic_dec(&conf->active_stripes);
 		if (!test_bit(STRIPE_EXPANDING, &sh->state)) {
 			if (!r5c_is_writeback(conf->log))
@@ -357,7 +357,7 @@ static void release_inactive_stripe_list(struct r5conf *conf,
 		if (atomic_read(&conf->active_stripes) == 0)
 			wake_up(&conf->wait_for_quiescent);
 		if (conf->retry_read_aligned)
-			md_wakeup_thread(conf->mddev->thread);
+			md_p2p_wakeup_thread(conf->mddev->thread);
 	}
 }
 
@@ -408,7 +408,7 @@ void raid5_release_stripe(struct stripe_head *sh)
 		goto slow_path;
 	wakeup = llist_add(&sh->release_list, &conf->released_stripes);
 	if (wakeup)
-		md_wakeup_thread(conf->mddev->thread);
+		md_p2p_wakeup_thread(conf->mddev->thread);
 	return;
 slow_path:
 	/* we are ok here if STRIPE_ON_RELEASE_LIST is set or not */
@@ -987,7 +987,7 @@ static void stripe_add_to_batch_list(struct r5conf *conf,
 	if (test_and_clear_bit(STRIPE_PREREAD_ACTIVE, &sh->state))
 		if (atomic_dec_return(&conf->preread_active_stripes)
 		    < IO_THRESHOLD)
-			md_wakeup_thread(conf->mddev->thread);
+			md_p2p_wakeup_thread(conf->mddev->thread);
 
 	if (test_and_clear_bit(STRIPE_BIT_DELAY, &sh->state)) {
 		int seq = sh->bm_seq;
@@ -1223,15 +1223,15 @@ again:
 					 * still need to write out the
 					 * bad block log - better give it
 					 * a chance*/
-					md_check_recovery(conf->mddev);
+					md_p2p_check_recovery(conf->mddev);
 				}
 				/*
-				 * Because md_wait_for_blocked_rdev
+				 * Because md_p2p_wait_for_blocked_rdev
 				 * will dec nr_pending, we must
 				 * increment it first.
 				 */
 				atomic_inc(&rdev->nr_pending);
-				md_wait_for_blocked_rdev(rdev, conf->mddev);
+				md_p2p_wait_for_blocked_rdev(rdev, conf->mddev);
 			} else {
 				/* Acknowledged bad block - skip the write */
 				rdev_dec_pending(rdev, conf->mddev);
@@ -2542,7 +2542,7 @@ static int resize_stripes(struct r5conf *conf, int newsize)
 	int i;
 	int hash, cnt;
 
-	md_allow_write(conf->mddev);
+	md_p2p_allow_write(conf->mddev);
 
 	/* Step 1 */
 	sc = kmem_cache_create(conf->cache_name[1-conf->active_name],
@@ -2827,9 +2827,9 @@ static void raid5_end_read_request(struct bio * bi)
 			clear_bit(R5_ReWrite, &sh->dev[i].flags);
 			if (!(set_bad
 			      && test_bit(In_sync, &rdev->flags)
-			      && rdev_set_badblocks(
+			      && md_p2p_rdev_set_badblocks(
 				      rdev, sh->sector, RAID5_STRIPE_SECTORS(conf), 0)))
-				md_error(conf->mddev, rdev);
+				md_p2p_error(conf->mddev, rdev);
 		}
 	}
 	rdev_dec_pending(rdev, conf->mddev);
@@ -2875,7 +2875,7 @@ static void raid5_end_write_request(struct bio *bi)
 
 	if (replacement) {
 		if (bi->bi_status)
-			md_error(conf->mddev, rdev);
+			md_p2p_error(conf->mddev, rdev);
 		else if (rdev_has_badblock(rdev, sh->sector,
 					   RAID5_STRIPE_SECTORS(conf)))
 			set_bit(R5_MadeGoodRepl, &sh->dev[i].flags);
@@ -3523,7 +3523,7 @@ static void __add_stripe_bio(struct stripe_head *sh, struct bio *bi,
 		bi->bi_next = *bip;
 	*bip = bi;
 	bio_inc_remaining(bi);
-	md_write_inc(conf->mddev, bi);
+	md_p2p_write_inc(conf->mddev, bi);
 
 	if (forwrite) {
 		/* check if page is covered */
@@ -3607,11 +3607,11 @@ handle_failed_stripe(struct r5conf *conf, struct stripe_head *sh,
 			else
 				rdev = NULL;
 			if (rdev) {
-				if (!rdev_set_badblocks(
+				if (!md_p2p_rdev_set_badblocks(
 					    rdev,
 					    sh->sector,
 					    RAID5_STRIPE_SECTORS(conf), 0))
-					md_error(conf->mddev, rdev);
+					md_p2p_error(conf->mddev, rdev);
 				rdev_dec_pending(rdev, conf->mddev);
 			}
 		}
@@ -3631,7 +3631,7 @@ handle_failed_stripe(struct r5conf *conf, struct stripe_head *sh,
 			sh->dev[i].sector + RAID5_STRIPE_SECTORS(conf)) {
 			struct bio *nextbi = r5_next_bio(conf, bi, sh->dev[i].sector);
 
-			md_write_end(conf->mddev);
+			md_p2p_write_end(conf->mddev);
 			bio_io_error(bi);
 			bi = nextbi;
 		}
@@ -3647,7 +3647,7 @@ handle_failed_stripe(struct r5conf *conf, struct stripe_head *sh,
 		       sh->dev[i].sector + RAID5_STRIPE_SECTORS(conf)) {
 			struct bio *bi2 = r5_next_bio(conf, bi, sh->dev[i].sector);
 
-			md_write_end(conf->mddev);
+			md_p2p_write_end(conf->mddev);
 			bio_io_error(bi);
 			bi = bi2;
 		}
@@ -3686,7 +3686,7 @@ handle_failed_stripe(struct r5conf *conf, struct stripe_head *sh,
 
 	if (test_and_clear_bit(STRIPE_FULL_WRITE, &sh->state))
 		if (atomic_dec_and_test(&conf->pending_full_writes))
-			md_wakeup_thread(conf->mddev->thread);
+			md_p2p_wakeup_thread(conf->mddev->thread);
 }
 
 static void
@@ -3719,7 +3719,7 @@ handle_failed_sync(struct r5conf *conf, struct stripe_head *sh,
 			if (rdev
 			    && !test_bit(Faulty, &rdev->flags)
 			    && !test_bit(In_sync, &rdev->flags)
-			    && !rdev_set_badblocks(rdev, sh->sector,
+			    && !md_p2p_rdev_set_badblocks(rdev, sh->sector,
 						   RAID5_STRIPE_SECTORS(conf), 0))
 				abort = 1;
 			rdev = conf->disks[i].replacement;
@@ -3727,7 +3727,7 @@ handle_failed_sync(struct r5conf *conf, struct stripe_head *sh,
 			if (rdev
 			    && !test_bit(Faulty, &rdev->flags)
 			    && !test_bit(In_sync, &rdev->flags)
-			    && !rdev_set_badblocks(rdev, sh->sector,
+			    && !md_p2p_rdev_set_badblocks(rdev, sh->sector,
 						   RAID5_STRIPE_SECTORS(conf), 0))
 				abort = 1;
 		}
@@ -3735,7 +3735,7 @@ handle_failed_sync(struct r5conf *conf, struct stripe_head *sh,
 			conf->recovery_disabled =
 				conf->mddev->recovery_disabled;
 	}
-	md_done_sync(conf->mddev, RAID5_STRIPE_SECTORS(conf), !abort);
+	md_p2p_done_sync(conf->mddev, RAID5_STRIPE_SECTORS(conf), !abort);
 }
 
 static int want_replace(struct stripe_head *sh, int disk_idx)
@@ -4020,7 +4020,7 @@ returnbi:
 				while (wbi && wbi->bi_iter.bi_sector <
 					dev->sector + RAID5_STRIPE_SECTORS(conf)) {
 					wbi2 = r5_next_bio(conf, wbi, dev->sector);
-					md_write_end(conf->mddev);
+					md_p2p_write_end(conf->mddev);
 					bio_endio(wbi);
 					wbi = wbi2;
 				}
@@ -4078,7 +4078,7 @@ unhash:
 
 	if (test_and_clear_bit(STRIPE_FULL_WRITE, &sh->state))
 		if (atomic_dec_and_test(&conf->pending_full_writes))
-			md_wakeup_thread(conf->mddev->thread);
+			md_p2p_wakeup_thread(conf->mddev->thread);
 
 	if (head_sh->batch_head && do_endio)
 		break_stripe_batch_list(head_sh, STRIPE_EXPAND_SYNC_FLAGS);
@@ -5146,7 +5146,7 @@ static void handle_stripe(struct stripe_head *sh)
 	if ((s.syncing || s.replacing) && s.locked == 0 &&
 	    !test_bit(STRIPE_COMPUTE_RUN, &sh->state) &&
 	    test_bit(STRIPE_INSYNC, &sh->state)) {
-		md_done_sync(conf->mddev, RAID5_STRIPE_SECTORS(conf), 1);
+		md_p2p_done_sync(conf->mddev, RAID5_STRIPE_SECTORS(conf), 1);
 		clear_bit(STRIPE_SYNCING, &sh->state);
 		if (test_and_clear_bit(R5_Overlap, &sh->dev[sh->pd_idx].flags))
 			wake_up_bit(&sh->dev[sh->pd_idx].flags, R5_Overlap);
@@ -5213,7 +5213,7 @@ static void handle_stripe(struct stripe_head *sh)
 		clear_bit(STRIPE_EXPAND_READY, &sh->state);
 		atomic_dec(&conf->reshape_stripes);
 		wake_up(&conf->wait_for_reshape);
-		md_done_sync(conf->mddev, RAID5_STRIPE_SECTORS(conf), 1);
+		md_p2p_done_sync(conf->mddev, RAID5_STRIPE_SECTORS(conf), 1);
 	}
 
 	if (s.expanding && s.locked == 0 &&
@@ -5224,7 +5224,7 @@ finish:
 	/* wait for this device to become unblocked */
 	if (unlikely(s.blocked_rdev)) {
 		if (conf->mddev->external)
-			md_wait_for_blocked_rdev(s.blocked_rdev,
+			md_p2p_wait_for_blocked_rdev(s.blocked_rdev,
 						 conf->mddev);
 		else
 			/* Internal metadata will immediately
@@ -5242,14 +5242,14 @@ finish:
 			if (test_and_clear_bit(R5_WriteError, &dev->flags)) {
 				/* We own a safe reference to the rdev */
 				rdev = conf->disks[i].rdev;
-				if (!rdev_set_badblocks(rdev, sh->sector,
+				if (!md_p2p_rdev_set_badblocks(rdev, sh->sector,
 							RAID5_STRIPE_SECTORS(conf), 0))
-					md_error(conf->mddev, rdev);
+					md_p2p_error(conf->mddev, rdev);
 				rdev_dec_pending(rdev, conf->mddev);
 			}
 			if (test_and_clear_bit(R5_MadeGood, &dev->flags)) {
 				rdev = conf->disks[i].rdev;
-				rdev_clear_badblocks(rdev, sh->sector,
+				md_p2p_rdev_clear_badblocks(rdev, sh->sector,
 						     RAID5_STRIPE_SECTORS(conf), 0);
 				rdev_dec_pending(rdev, conf->mddev);
 			}
@@ -5258,7 +5258,7 @@ finish:
 				if (!rdev)
 					/* rdev have been moved down */
 					rdev = conf->disks[i].rdev;
-				rdev_clear_badblocks(rdev, sh->sector,
+				md_p2p_rdev_clear_badblocks(rdev, sh->sector,
 						     RAID5_STRIPE_SECTORS(conf), 0);
 				rdev_dec_pending(rdev, conf->mddev);
 			}
@@ -5277,7 +5277,7 @@ finish:
 		atomic_dec(&conf->preread_active_stripes);
 		if (atomic_read(&conf->preread_active_stripes) <
 		    IO_THRESHOLD)
-			md_wakeup_thread(conf->mddev->thread);
+			md_p2p_wakeup_thread(conf->mddev->thread);
 	}
 
 	clear_bit_unlock(STRIPE_ACTIVE, &sh->state);
@@ -5344,7 +5344,7 @@ static void add_bio_to_retry(struct bio *bi,struct r5conf *conf)
 	conf->retry_read_aligned_list = bi;
 
 	spin_unlock_irqrestore(&conf->device_lock, flags);
-	md_wakeup_thread(conf->mddev->thread);
+	md_p2p_wakeup_thread(conf->mddev->thread);
 }
 
 static struct bio *remove_bio_from_retry(struct r5conf *conf,
@@ -5438,7 +5438,7 @@ static int raid5_read_one_chunk(struct mddev *mddev, struct bio *raid_bio)
 		return 0;
 	}
 
-	md_account_bio(mddev, &raid_bio);
+	md_p2p_account_bio(mddev, &raid_bio);
 	raid_bio->bi_next = (void *)rdev;
 
 	align_bio = bio_alloc_clone(rdev->bdev, raid_bio, GFP_NOIO,
@@ -5735,7 +5735,7 @@ static void make_discard_request(struct mddev *mddev, struct bio *bi)
 			sh->dev[d].towrite = bi;
 			set_bit(R5_OVERWRITE, &sh->dev[d].flags);
 			bio_inc_remaining(bi);
-			md_write_inc(mddev, bi);
+			md_p2p_write_inc(mddev, bi);
 			sh->overwrite_disks++;
 		}
 		spin_unlock_irq(&sh->stripe_lock);
@@ -5822,7 +5822,7 @@ static int add_all_stripe_bios(struct r5conf *conf,
 				raid5_release_stripe(ctx->batch_last);
 				ctx->batch_last = NULL;
 			}
-			md_wakeup_thread(conf->mddev->thread);
+			md_p2p_wakeup_thread(conf->mddev->thread);
 			wait_on_bit(&dev->flags, R5_Overlap, TASK_UNINTERRUPTIBLE);
 			return 0;
 		}
@@ -5989,7 +5989,7 @@ static enum stripe_result make_stripe_request(struct mddev *mddev,
 	}
 
 	if (test_bit(STRIPE_EXPANDING, &sh->state)) {
-		md_wakeup_thread(mddev->thread);
+		md_p2p_wakeup_thread(mddev->thread);
 		ret = STRIPE_SCHEDULE_AND_RETRY;
 		goto out_release;
 	}
@@ -6083,7 +6083,7 @@ static bool raid5_make_request(struct mddev *mddev, struct bio * bi)
 		if (ret == 0)
 			return true;
 		if (ret == -ENODEV) {
-			if (md_flush_request(mddev, bi))
+			if (md_p2p_flush_request(mddev, bi))
 				return true;
 		}
 		/* ret == -EAGAIN, fallback */
@@ -6094,7 +6094,7 @@ static bool raid5_make_request(struct mddev *mddev, struct bio * bi)
 		ctx.do_flush = bi->bi_opf & REQ_PREFLUSH;
 	}
 
-	md_write_start(mddev, bi);
+	md_p2p_write_start(mddev, bi);
 	/*
 	 * If array is degraded, better not do chunk aligned read because
 	 * later we might have to read it again in order to reconstruct
@@ -6109,7 +6109,7 @@ static bool raid5_make_request(struct mddev *mddev, struct bio * bi)
 
 	if (unlikely(bio_op(bi) == REQ_OP_DISCARD)) {
 		make_discard_request(mddev, bi);
-		md_write_end(mddev);
+		md_p2p_write_end(mddev);
 		return true;
 	}
 
@@ -6131,10 +6131,10 @@ static bool raid5_make_request(struct mddev *mddev, struct bio * bi)
 	    get_reshape_loc(mddev, conf, logical_sector) == LOC_INSIDE_RESHAPE) {
 		bio_wouldblock_error(bi);
 		if (rw == WRITE)
-			md_write_end(mddev);
+			md_p2p_write_end(mddev);
 		return true;
 	}
-	md_account_bio(mddev, &bi);
+	md_p2p_account_bio(mddev, &bi);
 
 	/*
 	 * Lets start with the stripe with the lowest chunk offset in the first
@@ -6194,9 +6194,9 @@ static bool raid5_make_request(struct mddev *mddev, struct bio * bi)
 		raid5_release_stripe(ctx.batch_last);
 
 	if (rw == WRITE)
-		md_write_end(mddev);
+		md_p2p_write_end(mddev);
 	if (res == STRIPE_WAIT_RESHAPE) {
-		md_free_cloned_bio(bi);
+		md_p2p_free_cloned_bio(bi);
 		return false;
 	}
 
@@ -6359,7 +6359,7 @@ static sector_t reshape_request(struct mddev *mddev, sector_t sector_nr, int *sk
 
 		conf->reshape_checkpoint = jiffies;
 		set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
-		md_wakeup_thread(mddev->thread);
+		md_p2p_wakeup_thread(mddev->thread);
 		wait_event(mddev->sb_wait, mddev->sb_flags == 0 ||
 			   test_bit(MD_RECOVERY_INTR, &mddev->recovery));
 		if (test_bit(MD_RECOVERY_INTR, &mddev->recovery))
@@ -6467,7 +6467,7 @@ finish:
 					rdev->recovery_offset = sector_nr;
 		conf->reshape_checkpoint = jiffies;
 		set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
-		md_wakeup_thread(mddev->thread);
+		md_p2p_wakeup_thread(mddev->thread);
 		wait_event(mddev->sb_wait,
 			   !test_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags)
 			   || test_bit(MD_RECOVERY_INTR, &mddev->recovery));
@@ -6518,7 +6518,7 @@ static inline sector_t raid5_sync_request(struct mddev *mddev, sector_t sector_n
 
 	/* No need to check resync_max as we never do more than one
 	 * stripe, and as resync_max will always be on a chunk boundary,
-	 * if the check in md_do_sync didn't fire, there is no chance
+	 * if the check in md_p2p_do_sync didn't fire, there is no chance
 	 * of overstepping resync_max here
 	 */
 
@@ -6750,7 +6750,7 @@ static void raid5d(struct md_thread *thread)
 
 	pr_debug("+++ raid5d active\n");
 
-	md_check_recovery(mddev);
+	md_p2p_check_recovery(mddev);
 
 	blk_start_plug(&plug);
 	handled = 0;
@@ -6797,7 +6797,7 @@ static void raid5d(struct md_thread *thread)
 
 		if (mddev->sb_flags & ~(1 << MD_SB_CHANGE_PENDING)) {
 			spin_unlock_irq(&conf->device_lock);
-			md_check_recovery(mddev);
+			md_p2p_check_recovery(mddev);
 			spin_lock_irq(&conf->device_lock);
 		}
 	}
@@ -6853,7 +6853,7 @@ raid5_set_cache_size(struct mddev *mddev, int size)
 		;
 	mutex_unlock(&conf->cache_size_mutex);
 
-	md_allow_write(mddev);
+	md_p2p_allow_write(mddev);
 
 	mutex_lock(&conf->cache_size_mutex);
 	while (size > conf->max_nr_stripes)
@@ -6887,7 +6887,7 @@ raid5_store_stripe_cache_size(struct mddev *mddev, const char *page, size_t len)
 		err = -ENODEV;
 	else
 		err = raid5_set_cache_size(mddev, new);
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 
 	return err ?: len;
 }
@@ -7065,7 +7065,7 @@ raid5_store_preread_threshold(struct mddev *mddev, const char *page, size_t len)
 		err = -EINVAL;
 	else
 		conf->bypass_threshold = new;
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return err ?: len;
 }
 
@@ -7674,7 +7674,7 @@ static struct r5conf *setup_conf(struct mddev *mddev)
 
 	sprintf(pers_name, "raid%d", mddev->new_level);
 	rcu_assign_pointer(conf->thread,
-			   md_register_thread(raid5d, mddev, pers_name));
+			   md_p2p_register_thread(raid5d, mddev, pers_name));
 	if (!conf->thread) {
 		pr_warn("md/raid:%s: couldn't allocate thread.\n",
 			mdname(mddev));
@@ -7735,13 +7735,13 @@ static int raid5_set_limits(struct mddev *mddev)
 	 */
 	stripe = roundup_pow_of_two(data_disks * (mddev->chunk_sectors << 9));
 
-	md_init_stacking_limits(&lim);
+	md_p2p_init_stacking_limits(&lim);
 	lim.io_min = mddev->chunk_sectors << 9;
 	lim.io_opt = lim.io_min * (conf->raid_disks - conf->max_degraded);
 	lim.features |= BLK_FEAT_RAID_PARTIAL_STRIPES_EXPENSIVE;
 	lim.discard_granularity = stripe;
 	lim.max_write_zeroes_sectors = 0;
-	mddev_stack_rdev_limits(mddev, &lim, 0);
+	md_p2p_mddev_stack_rdev_limits(mddev, &lim, 0);
 	rdev_for_each(rdev, mddev)
 		queue_limits_stack_bdev(&lim, rdev->bdev, rdev->new_data_offset,
 				mddev->gendisk->disk_name);
@@ -8034,7 +8034,7 @@ static int raid5_run(struct mddev *mddev)
 	    sysfs_create_group(&mddev->kobj, &raid5_attrs_group))
 		pr_warn("raid5: failed to create sysfs attributes for %s\n",
 			mdname(mddev));
-	md_set_array_sectors(mddev, raid5_size(mddev, 0, 0));
+	md_p2p_set_array_sectors(mddev, raid5_size(mddev, 0, 0));
 
 	if (!mddev_is_dm(mddev)) {
 		ret = raid5_set_limits(mddev);
@@ -8047,7 +8047,7 @@ static int raid5_run(struct mddev *mddev)
 
 	return 0;
 abort:
-	md_unregister_thread(mddev, &mddev->thread);
+	md_p2p_unregister_thread(mddev, &mddev->thread);
 	print_raid5_conf(conf);
 	free_conf(conf);
 	mddev->private = NULL;
@@ -8335,7 +8335,7 @@ static int raid5_resize(struct mddev *mddev, sector_t sectors)
 	if (ret)
 		return ret;
 
-	md_set_array_sectors(mddev, newsize);
+	md_p2p_set_array_sectors(mddev, newsize);
 	if (sectors > mddev->dev_sectors &&
 	    mddev->recovery_cp > mddev->dev_sectors) {
 		mddev->recovery_cp = mddev->dev_sectors;
@@ -8535,7 +8535,7 @@ static int raid5_start_reshape(struct mddev *mddev)
 	set_bit(MD_RECOVERY_RESHAPE, &mddev->recovery);
 	set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
 	conf->reshape_checkpoint = jiffies;
-	md_new_event();
+	md_p2p_new_event();
 	return 0;
 }
 
@@ -8550,7 +8550,7 @@ static void end_reshape(struct r5conf *conf)
 
 		spin_lock_irq(&conf->device_lock);
 		conf->previous_raid_disks = conf->raid_disks;
-		md_finish_reshape(conf->mddev);
+		md_p2p_finish_reshape(conf->mddev);
 		smp_wmb();
 		conf->reshape_progress = MaxSector;
 		conf->mddev->reshape_position = MaxSector;
@@ -8562,7 +8562,7 @@ static void end_reshape(struct r5conf *conf)
 		spin_unlock_irq(&conf->device_lock);
 		wake_up(&conf->wait_for_reshape);
 
-		mddev_update_io_opt(conf->mddev,
+		md_p2p_mddev_update_io_opt(conf->mddev,
 			conf->raid_disks - conf->max_degraded);
 	}
 }
@@ -8762,7 +8762,7 @@ static int raid5_check_reshape(struct mddev *mddev)
 			mddev->chunk_sectors = new_chunk;
 		}
 		set_bit(MD_SB_CHANGE_DEVS, &mddev->sb_flags);
-		md_wakeup_thread(mddev->thread);
+		md_p2p_wakeup_thread(mddev->thread);
 	}
 	return check_reshape(mddev);
 }
@@ -8926,7 +8926,7 @@ static int raid5_change_consistency_policy(struct mddev *mddev, const char *buf)
 	}
 
 	if (!err)
-		md_update_sb(mddev, 1);
+		md_p2p_update_sb(mddev, 1);
 
 	mddev_unlock_and_resume(mddev);
 
@@ -9049,17 +9049,17 @@ static int __init raid5_init(void)
 		destroy_workqueue(raid5_wq);
 		return ret;
 	}
-	register_md_personality(&raid6_personality);
-	register_md_personality(&raid5_personality);
-	register_md_personality(&raid4_personality);
+	md_p2p_register_personality(&raid6_personality);
+	md_p2p_register_personality(&raid5_personality);
+	md_p2p_register_personality(&raid4_personality);
 	return 0;
 }
 
 static void raid5_exit(void)
 {
-	unregister_md_personality(&raid6_personality);
-	unregister_md_personality(&raid5_personality);
-	unregister_md_personality(&raid4_personality);
+	md_p2p_unregister_personality(&raid6_personality);
+	md_p2p_unregister_personality(&raid5_personality);
+	md_p2p_unregister_personality(&raid4_personality);
 	cpuhp_remove_multi_state(CPUHP_MD_RAID5_PREPARE);
 	destroy_workqueue(raid5_wq);
 }

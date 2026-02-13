@@ -289,9 +289,9 @@ static inline int rdev_has_badblock(struct md_rdev *rdev, sector_t s,
 	return is_badblock(rdev, s, sectors, &first_bad, &bad_sectors);
 }
 
-extern int rdev_set_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
+extern int md_p2p_rdev_set_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
 			      int is_new);
-extern int rdev_clear_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
+extern int md_p2p_rdev_clear_badblocks(struct md_rdev *rdev, sector_t s, int sectors,
 				int is_new);
 struct md_cluster_info;
 
@@ -304,7 +304,7 @@ struct md_cluster_info;
  * @MD_CLUSTER_RESYNC_LOCKED: cluster raid only, which means node, already took
  *			       resync lock, need to release the lock.
  * @MD_FAILFAST_SUPPORTED: Using MD_FAILFAST on metadata writes is supported as
- *			    calls to md_error() will never cause the array to
+ *			    calls to md_p2p_error() will never cause the array to
  *			    become failed.
  * @MD_HAS_PPL:  The raid array has PPL feature set.
  * @MD_HAS_MULTIPLE_PPLS: The raid array has multiple PPLs feature set.
@@ -684,7 +684,7 @@ static inline int mddev_trylock(struct mddev *mddev)
 {
 	return mutex_trylock(&mddev->reconfig_mutex);
 }
-extern void mddev_unlock(struct mddev *mddev);
+extern void md_p2p_mddev_unlock(struct mddev *mddev);
 
 static inline void md_sync_acct(struct block_device *bdev, unsigned long nr_sectors)
 {
@@ -843,76 +843,76 @@ static inline void safe_put_page(struct page *p)
 	if (p) put_page(p);
 }
 
-extern int register_md_personality(struct md_personality *p);
-extern int unregister_md_personality(struct md_personality *p);
-extern int register_md_cluster_operations(const struct md_cluster_operations *ops,
+extern int md_p2p_register_personality(struct md_personality *p);
+extern int md_p2p_unregister_personality(struct md_personality *p);
+extern int md_p2p_register_cluster_operations(const struct md_cluster_operations *ops,
 		struct module *module);
-extern int unregister_md_cluster_operations(void);
+extern int md_p2p_unregister_cluster_operations(void);
 extern int md_setup_cluster(struct mddev *mddev, int nodes);
 extern void md_cluster_stop(struct mddev *mddev);
-extern struct md_thread *md_register_thread(
+extern struct md_thread *md_p2p_register_thread(
 	void (*run)(struct md_thread *thread),
 	struct mddev *mddev,
 	const char *name);
-extern void md_unregister_thread(struct mddev *mddev, struct md_thread __rcu **threadp);
-extern void md_wakeup_thread(struct md_thread __rcu *thread);
-extern void md_check_recovery(struct mddev *mddev);
-extern void md_reap_sync_thread(struct mddev *mddev);
+extern void md_p2p_unregister_thread(struct mddev *mddev, struct md_thread __rcu **threadp);
+extern void md_p2p_wakeup_thread(struct md_thread __rcu *thread);
+extern void md_p2p_check_recovery(struct mddev *mddev);
+extern void md_p2p_reap_sync_thread(struct mddev *mddev);
 extern enum sync_action md_sync_action(struct mddev *mddev);
 extern enum sync_action md_sync_action_by_name(const char *page);
 extern const char *md_sync_action_name(enum sync_action action);
-extern void md_write_start(struct mddev *mddev, struct bio *bi);
-extern void md_write_inc(struct mddev *mddev, struct bio *bi);
-extern void md_write_end(struct mddev *mddev);
-extern void md_done_sync(struct mddev *mddev, int blocks, int ok);
-extern void md_error(struct mddev *mddev, struct md_rdev *rdev);
-extern void md_finish_reshape(struct mddev *mddev);
-void md_submit_discard_bio(struct mddev *mddev, struct md_rdev *rdev,
+extern void md_p2p_write_start(struct mddev *mddev, struct bio *bi);
+extern void md_p2p_write_inc(struct mddev *mddev, struct bio *bi);
+extern void md_p2p_write_end(struct mddev *mddev);
+extern void md_p2p_done_sync(struct mddev *mddev, int blocks, int ok);
+extern void md_p2p_error(struct mddev *mddev, struct md_rdev *rdev);
+extern void md_p2p_finish_reshape(struct mddev *mddev);
+void md_p2p_submit_discard_bio(struct mddev *mddev, struct md_rdev *rdev,
 			struct bio *bio, sector_t start, sector_t size);
-void md_account_bio(struct mddev *mddev, struct bio **bio);
-void md_free_cloned_bio(struct bio *bio);
+void md_p2p_account_bio(struct mddev *mddev, struct bio **bio);
+void md_p2p_free_cloned_bio(struct bio *bio);
 
-extern bool __must_check md_flush_request(struct mddev *mddev, struct bio *bio);
+extern bool __must_check md_p2p_flush_request(struct mddev *mddev, struct bio *bio);
 extern void md_super_write(struct mddev *mddev, struct md_rdev *rdev,
 			   sector_t sector, int size, struct page *page);
 extern int md_super_wait(struct mddev *mddev);
-extern int sync_page_io(struct md_rdev *rdev, sector_t sector, int size,
+extern int md_p2p_sync_page_io(struct md_rdev *rdev, sector_t sector, int size,
 		struct page *page, blk_opf_t opf, bool metadata_op);
-extern void md_do_sync(struct md_thread *thread);
-extern void md_new_event(void);
-extern void md_allow_write(struct mddev *mddev);
-extern void md_wait_for_blocked_rdev(struct md_rdev *rdev, struct mddev *mddev);
-extern void md_set_array_sectors(struct mddev *mddev, sector_t array_sectors);
-extern int md_check_no_bitmap(struct mddev *mddev);
-extern int md_integrity_register(struct mddev *mddev);
+extern void md_p2p_do_sync(struct md_thread *thread);
+extern void md_p2p_new_event(void);
+extern void md_p2p_allow_write(struct mddev *mddev);
+extern void md_p2p_wait_for_blocked_rdev(struct md_rdev *rdev, struct mddev *mddev);
+extern void md_p2p_set_array_sectors(struct mddev *mddev, sector_t array_sectors);
+extern int md_p2p_check_no_bitmap(struct mddev *mddev);
+extern int md_p2p_integrity_register(struct mddev *mddev);
 extern int strict_strtoul_scaled(const char *cp, unsigned long *res, int scale);
 
-extern int mddev_init(struct mddev *mddev);
-extern void mddev_destroy(struct mddev *mddev);
-void md_init_stacking_limits(struct queue_limits *lim);
+extern int md_p2p_mddev_init(struct mddev *mddev);
+extern void md_p2p_mddev_destroy(struct mddev *mddev);
+void md_p2p_init_stacking_limits(struct queue_limits *lim);
 struct mddev *md_alloc(dev_t dev, char *name);
 void mddev_put(struct mddev *mddev);
-extern int md_run(struct mddev *mddev);
-extern int md_start(struct mddev *mddev);
-extern void md_stop(struct mddev *mddev);
-extern void md_stop_writes(struct mddev *mddev);
-extern int md_rdev_init(struct md_rdev *rdev);
-extern void md_rdev_clear(struct md_rdev *rdev);
+extern int md_p2p_run(struct mddev *mddev);
+extern int md_p2p_start(struct mddev *mddev);
+extern void md_p2p_stop(struct mddev *mddev);
+extern void md_p2p_stop_writes(struct mddev *mddev);
+extern int md_p2p_rdev_init(struct md_rdev *rdev);
+extern void md_p2p_rdev_clear(struct md_rdev *rdev);
 
-extern bool md_handle_request(struct mddev *mddev, struct bio *bio);
-extern int mddev_suspend(struct mddev *mddev, bool interruptible);
-extern void mddev_resume(struct mddev *mddev);
-extern void md_idle_sync_thread(struct mddev *mddev);
-extern void md_frozen_sync_thread(struct mddev *mddev);
-extern void md_unfrozen_sync_thread(struct mddev *mddev);
+extern bool md_p2p_handle_request(struct mddev *mddev, struct bio *bio);
+extern int md_p2p_mddev_suspend(struct mddev *mddev, bool interruptible);
+extern void md_p2p_mddev_resume(struct mddev *mddev);
+extern void md_p2p_idle_sync_thread(struct mddev *mddev);
+extern void md_p2p_frozen_sync_thread(struct mddev *mddev);
+extern void md_p2p_unfrozen_sync_thread(struct mddev *mddev);
 
-extern void md_reload_sb(struct mddev *mddev, int raid_disk);
-extern void md_update_sb(struct mddev *mddev, int force);
+extern void md_p2p_reload_sb(struct mddev *mddev, int raid_disk);
+extern void md_p2p_update_sb(struct mddev *mddev, int force);
 extern void mddev_create_serial_pool(struct mddev *mddev, struct md_rdev *rdev);
 extern void mddev_destroy_serial_pool(struct mddev *mddev,
 				      struct md_rdev *rdev);
-struct md_rdev *md_find_rdev_nr_rcu(struct mddev *mddev, int nr);
-struct md_rdev *md_find_rdev_rcu(struct mddev *mddev, dev_t dev);
+struct md_rdev *md_p2p_find_rdev_nr_rcu(struct mddev *mddev, int nr);
+struct md_rdev *md_p2p_find_rdev_rcu(struct mddev *mddev, dev_t dev);
 
 static inline bool is_rdev_broken(struct md_rdev *rdev)
 {
@@ -924,11 +924,11 @@ static inline void rdev_dec_pending(struct md_rdev *rdev, struct mddev *mddev)
 	int faulty = test_bit(Faulty, &rdev->flags);
 	if (atomic_dec_and_test(&rdev->nr_pending) && faulty) {
 		set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
-		md_wakeup_thread(mddev->thread);
+		md_p2p_wakeup_thread(mddev->thread);
 	}
 }
 
-extern const struct md_cluster_operations *md_cluster_ops;
+extern const struct md_cluster_operations *md_p2p_cluster_ops;
 static inline int mddev_is_clustered(struct mddev *mddev)
 {
 	return mddev->cluster_info && mddev->bitmap_info.nodes > 1;
@@ -952,27 +952,27 @@ static inline int mddev_suspend_and_lock(struct mddev *mddev)
 {
 	int ret;
 
-	ret = mddev_suspend(mddev, true);
+	ret = md_p2p_mddev_suspend(mddev, true);
 	if (ret)
 		return ret;
 
 	ret = mddev_lock(mddev);
 	if (ret)
-		mddev_resume(mddev);
+		md_p2p_mddev_resume(mddev);
 
 	return ret;
 }
 
 static inline void mddev_suspend_and_lock_nointr(struct mddev *mddev)
 {
-	mddev_suspend(mddev, false);
+	md_p2p_mddev_suspend(mddev, false);
 	mutex_lock(&mddev->reconfig_mutex);
 }
 
 static inline void mddev_unlock_and_resume(struct mddev *mddev)
 {
-	mddev_unlock(mddev);
-	mddev_resume(mddev);
+	md_p2p_mddev_unlock(mddev);
+	md_p2p_mddev_resume(mddev);
 }
 
 struct mdu_array_info_s;
@@ -985,10 +985,10 @@ int md_set_array_info(struct mddev *mddev, struct mdu_array_info_s *info);
 int md_add_new_disk(struct mddev *mddev, struct mdu_disk_info_s *info);
 int do_md_run(struct mddev *mddev);
 #define MDDEV_STACK_INTEGRITY	(1u << 0)
-int mddev_stack_rdev_limits(struct mddev *mddev, struct queue_limits *lim,
+int md_p2p_mddev_stack_rdev_limits(struct mddev *mddev, struct queue_limits *lim,
 		unsigned int flags);
-int mddev_stack_new_rdev(struct mddev *mddev, struct md_rdev *rdev);
-void mddev_update_io_opt(struct mddev *mddev, unsigned int nr_stripes);
+int md_p2p_mddev_stack_new_rdev(struct mddev *mddev, struct md_rdev *rdev);
+void md_p2p_mddev_update_io_opt(struct mddev *mddev, unsigned int nr_stripes);
 
 extern const struct block_device_operations md_fops;
 

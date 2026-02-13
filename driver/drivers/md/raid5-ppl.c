@@ -405,7 +405,7 @@ static void ppl_log_endio(struct bio *bio)
 	pr_debug("%s: seq: %llu\n", __func__, io->seq);
 
 	if (bio->bi_status)
-		md_error(ppl_conf->mddev, log->rdev);
+		md_p2p_error(ppl_conf->mddev, log->rdev);
 
 	list_for_each_entry_safe(sh, next, &io->stripe_list, log_list) {
 		list_del_init(&sh->log_list);
@@ -591,9 +591,9 @@ static void ppl_flush_endio(struct bio *bio)
 		struct md_rdev *rdev;
 
 		rcu_read_lock();
-		rdev = md_find_rdev_rcu(conf->mddev, bio_dev(bio));
+		rdev = md_p2p_find_rdev_rcu(conf->mddev, bio_dev(bio));
 		if (rdev)
-			md_error(rdev->mddev, rdev);
+			md_p2p_error(rdev->mddev, rdev);
 		rcu_read_unlock();
 	}
 
@@ -601,7 +601,7 @@ static void ppl_flush_endio(struct bio *bio)
 
 	if (atomic_dec_and_test(&io->pending_flushes)) {
 		ppl_io_unit_finished(io);
-		md_wakeup_thread(conf->mddev->thread);
+		md_p2p_wakeup_thread(conf->mddev->thread);
 	}
 }
 
@@ -892,9 +892,9 @@ static int ppl_recover_entry(struct ppl_log *log, struct ppl_header_entry *e,
 			pr_debug("%s:%*s reading data member disk %pg sector %llu\n",
 				 __func__, indent, "", rdev->bdev,
 				 (unsigned long long)sector);
-			if (!sync_page_io(rdev, sector, block_size, page2,
+			if (!md_p2p_sync_page_io(rdev, sector, block_size, page2,
 					REQ_OP_READ, false)) {
-				md_error(mddev, rdev);
+				md_p2p_error(mddev, rdev);
 				pr_debug("%s:%*s read failed!\n", __func__,
 					 indent, "");
 				ret = -EIO;
@@ -913,13 +913,13 @@ static int ppl_recover_entry(struct ppl_log *log, struct ppl_header_entry *e,
 			pr_debug("%s:%*s reading pp disk sector %llu\n",
 				 __func__, indent, "",
 				 (unsigned long long)(ppl_sector + i));
-			if (!sync_page_io(log->rdev,
+			if (!md_p2p_sync_page_io(log->rdev,
 					ppl_sector - log->rdev->data_offset + i,
 					block_size, page2, REQ_OP_READ,
 					false)) {
 				pr_debug("%s:%*s read failed!\n", __func__,
 					 indent, "");
-				md_error(mddev, log->rdev);
+				md_p2p_error(mddev, log->rdev);
 				ret = -EIO;
 				goto out;
 			}
@@ -939,11 +939,11 @@ static int ppl_recover_entry(struct ppl_log *log, struct ppl_header_entry *e,
 			 __func__, indent, "",
 			 (unsigned long long)parity_sector,
 			 parity_rdev->bdev);
-		if (!sync_page_io(parity_rdev, parity_sector, block_size,
+		if (!md_p2p_sync_page_io(parity_rdev, parity_sector, block_size,
 				  page1, REQ_OP_WRITE, false)) {
 			pr_debug("%s:%*s parity write error!\n", __func__,
 				 indent, "");
-			md_error(mddev, parity_rdev);
+			md_p2p_error(mddev, parity_rdev);
 			ret = -EIO;
 			goto out;
 		}
@@ -991,9 +991,9 @@ static int ppl_recover(struct ppl_log *log, struct ppl_header *pplhdr,
 		while (pp_size) {
 			int s = pp_size > PAGE_SIZE ? PAGE_SIZE : pp_size;
 
-			if (!sync_page_io(rdev, sector - rdev->data_offset,
+			if (!md_p2p_sync_page_io(rdev, sector - rdev->data_offset,
 					s, page, REQ_OP_READ, false)) {
-				md_error(mddev, rdev);
+				md_p2p_error(mddev, rdev);
 				ret = -EIO;
 				goto out;
 			}
@@ -1054,10 +1054,10 @@ static int ppl_write_empty_header(struct ppl_log *log)
 	pplhdr->signature = cpu_to_le32(log->ppl_conf->signature);
 	pplhdr->checksum = cpu_to_le32(~crc32c_le(~0, pplhdr, PAGE_SIZE));
 
-	if (!sync_page_io(rdev, rdev->ppl.sector - rdev->data_offset,
+	if (!md_p2p_sync_page_io(rdev, rdev->ppl.sector - rdev->data_offset,
 			  PPL_HEADER_SIZE, page, REQ_OP_WRITE | REQ_SYNC |
 			  REQ_FUA, false)) {
-		md_error(rdev->mddev, rdev);
+		md_p2p_error(rdev->mddev, rdev);
 		ret = -EIO;
 	}
 
@@ -1091,11 +1091,11 @@ static int ppl_load_distributed(struct ppl_log *log)
 
 	/* searching ppl area for latest ppl */
 	while (pplhdr_offset < rdev->ppl.size - (PPL_HEADER_SIZE >> 9)) {
-		if (!sync_page_io(rdev,
+		if (!md_p2p_sync_page_io(rdev,
 				  rdev->ppl.sector - rdev->data_offset +
 				  pplhdr_offset, PAGE_SIZE, page, REQ_OP_READ,
 				  false)) {
-			md_error(mddev, rdev);
+			md_p2p_error(mddev, rdev);
 			ret = -EIO;
 			/* if not able to read - don't recover any PPL */
 			pplhdr = NULL;
@@ -1511,7 +1511,7 @@ ppl_write_hint_store(struct mddev *mddev, const char *page, size_t len)
 	else if (!raid5_has_ppl(conf) || !conf->log_private)
 		err = -EINVAL;
 
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 
 	return err ?: len;
 }

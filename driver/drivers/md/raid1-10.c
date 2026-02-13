@@ -218,7 +218,7 @@ static inline bool exceed_read_errors(struct mddev *mddev, struct md_rdev *rdev)
 			  mdname(mddev), rdev->bdev, read_errors, max_read_errors);
 		pr_notice("md/"RAID_1_10_NAME":%s: %pg: Failing raid device\n",
 			  mdname(mddev), rdev->bdev);
-		md_error(mddev, rdev);
+		md_p2p_error(mddev, rdev);
 		return true;
 	}
 
@@ -287,7 +287,7 @@ static inline bool raid1_should_read_first(struct mddev *mddev,
 		return true;
 
 	if (mddev_is_clustered(mddev) &&
-	    md_cluster_ops->area_resyncing(mddev, READ, this_sector,
+	    md_p2p_cluster_ops->area_resyncing(mddev, READ, this_sector,
 					   this_sector + len))
 		return true;
 

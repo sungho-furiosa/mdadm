@@ -71,11 +71,11 @@ static int linear_set_limits(struct mddev *mddev)
 	struct queue_limits lim;
 	int err;
 
-	md_init_stacking_limits(&lim);
+	md_p2p_init_stacking_limits(&lim);
 	lim.max_hw_sectors = mddev->chunk_sectors;
 	lim.max_write_zeroes_sectors = mddev->chunk_sectors;
 	lim.io_min = mddev->chunk_sectors << 9;
-	err = mddev_stack_rdev_limits(mddev, &lim, MDDEV_STACK_INTEGRITY);
+	err = md_p2p_mddev_stack_rdev_limits(mddev, &lim, MDDEV_STACK_INTEGRITY);
 	if (err)
 		return err;
 
@@ -165,7 +165,7 @@ static int linear_run(struct mddev *mddev)
 	struct linear_conf *conf;
 	int ret;
 
-	if (md_check_no_bitmap(mddev))
+	if (md_p2p_check_no_bitmap(mddev))
 		return -EINVAL;
 
 	conf = linear_conf(mddev, mddev->raid_disks);
@@ -173,9 +173,9 @@ static int linear_run(struct mddev *mddev)
 		return PTR_ERR(conf);
 
 	mddev->private = conf;
-	md_set_array_sectors(mddev, linear_size(mddev, 0, 0));
+	md_p2p_set_array_sectors(mddev, linear_size(mddev, 0, 0));
 
-	ret =  md_integrity_register(mddev);
+	ret =  md_p2p_integrity_register(mddev);
 	if (ret) {
 		kfree(conf);
 		mddev->private = NULL;
@@ -217,7 +217,7 @@ static int linear_add(struct mddev *mddev, struct md_rdev *rdev)
 	WARN_ONCE(mddev->raid_disks != newconf->raid_disks,
 		"copied raid_disks doesn't match mddev->raid_disks");
 	rcu_assign_pointer(mddev->private, newconf);
-	md_set_array_sectors(mddev, linear_size(mddev, 0, 0));
+	md_p2p_set_array_sectors(mddev, linear_size(mddev, 0, 0));
 	set_capacity_and_notify(mddev->gendisk, mddev->array_sectors);
 	kfree_rcu(oldconf, rcu);
 	return 0;
@@ -237,7 +237,7 @@ static bool linear_make_request(struct mddev *mddev, struct bio *bio)
 	sector_t bio_sector = bio->bi_iter.bi_sector;
 
 	if (unlikely(bio->bi_opf & REQ_PREFLUSH)
-	    && md_flush_request(mddev, bio))
+	    && md_p2p_flush_request(mddev, bio))
 		return true;
 
 	tmp_dev = which_dev(mddev, bio_sector);
@@ -250,7 +250,7 @@ static bool linear_make_request(struct mddev *mddev, struct bio *bio)
 		goto out_of_bounds;
 
 	if (unlikely(is_rdev_broken(tmp_dev->rdev))) {
-		md_error(mddev, tmp_dev->rdev);
+		md_p2p_error(mddev, tmp_dev->rdev);
 		bio_io_error(bio);
 		return true;
 	}
@@ -271,7 +271,7 @@ static bool linear_make_request(struct mddev *mddev, struct bio *bio)
 		bio = split;
 	}
 
-	md_account_bio(mddev, &bio);
+	md_p2p_account_bio(mddev, &bio);
 	bio_set_dev(bio, tmp_dev->rdev->bdev);
 	bio->bi_iter.bi_sector = bio->bi_iter.bi_sector -
 		start_sector + data_offset;
@@ -335,12 +335,12 @@ static struct md_personality linear_personality = {
 
 static int __init linear_init(void)
 {
-	return register_md_personality(&linear_personality);
+	return md_p2p_register_personality(&linear_personality);
 }
 
 static void linear_exit(void)
 {
-	unregister_md_personality(&linear_personality);
+	md_p2p_unregister_personality(&linear_personality);
 }
 
 module_init(linear_init);

@@ -298,7 +298,7 @@ r5c_return_dev_pending_writes(struct r5conf *conf, struct r5dev *dev)
 	while (wbi && wbi->bi_iter.bi_sector <
 	       dev->sector + RAID5_STRIPE_SECTORS(conf)) {
 		wbi2 = r5_next_bio(conf, wbi, dev->sector);
-		md_write_end(conf->mddev);
+		md_p2p_write_end(conf->mddev);
 		bio_endio(wbi);
 		wbi = wbi2;
 	}
@@ -564,7 +564,7 @@ static void r5l_log_endio(struct bio *bio)
 	bool has_flush_payload;
 
 	if (bio->bi_status)
-		md_error(log->rdev->mddev, log->rdev);
+		md_p2p_error(log->rdev->mddev, log->rdev);
 
 	bio_put(bio);
 	mempool_free(io->meta_page, &log->meta_pool);
@@ -599,7 +599,7 @@ static void r5l_log_endio(struct bio *bio)
 	spin_unlock_irqrestore(&log->io_list_lock, flags);
 
 	if (log->need_cache_flush)
-		md_wakeup_thread(log->rdev->mddev->thread);
+		md_p2p_wakeup_thread(log->rdev->mddev->thread);
 
 	/* finish flush only io_unit and PAYLOAD_FLUSH only io_unit */
 	if (has_null_flush) {
@@ -695,9 +695,9 @@ static void r5c_disable_writeback_async(struct work_struct *work)
 
 	log = READ_ONCE(conf->log);
 	if (log) {
-		mddev_suspend(mddev, false);
+		md_p2p_mddev_suspend(mddev, false);
 		log->r5c_journal_mode = R5C_JOURNAL_MODE_WRITE_THROUGH;
-		mddev_resume(mddev);
+		md_p2p_mddev_resume(mddev);
 	}
 }
 
@@ -1257,7 +1257,7 @@ static void r5l_log_flush_endio(struct bio *bio)
 	struct r5l_io_unit *io;
 
 	if (bio->bi_status)
-		md_error(log->rdev->mddev, log->rdev);
+		md_p2p_error(log->rdev->mddev, log->rdev);
 	bio_uninit(bio);
 
 	spin_lock_irqsave(&log->io_list_lock, flags);
@@ -1322,7 +1322,7 @@ static void r5l_write_super_and_discard_space(struct r5l_log *log,
 	/*
 	 * Discard could zero data, so before discard we must make sure
 	 * superblock is updated to new log tail. Updating superblock (either
-	 * directly call md_update_sb() or depend on md thread) must hold
+	 * directly call md_p2p_update_sb() or depend on md thread) must hold
 	 * reconfig mutex. On the other hand, raid5_quiesce is called with
 	 * reconfig_mutex hold. The first step of raid5_quiesce() is waiting
 	 * for all IO finish, hence waiting for reclaim thread, while reclaim
@@ -1334,8 +1334,8 @@ static void r5l_write_super_and_discard_space(struct r5l_log *log,
 		BIT(MD_SB_CHANGE_DEVS) | BIT(MD_SB_CHANGE_PENDING));
 	if (!mddev_trylock(mddev))
 		return;
-	md_update_sb(mddev, 1);
-	mddev_unlock(mddev);
+	md_p2p_update_sb(mddev, 1);
+	md_p2p_mddev_unlock(mddev);
 
 	/* discard IO error really doesn't matter, ignore it */
 	if (log->last_checkpoint < end) {
@@ -1488,7 +1488,7 @@ static void r5c_do_reclaim(struct r5conf *conf)
 	if (!test_bit(R5C_LOG_CRITICAL, &conf->cache_state))
 		r5l_run_no_space_stripes(log);
 
-	md_wakeup_thread(conf->mddev->thread);
+	md_p2p_wakeup_thread(conf->mddev->thread);
 }
 
 static void r5l_do_reclaim(struct r5l_log *log)
@@ -1516,7 +1516,7 @@ static void r5l_do_reclaim(struct r5l_log *log)
 		     list_empty(&log->finished_ios)))
 			break;
 
-		md_wakeup_thread(log->rdev->mddev->thread);
+		md_p2p_wakeup_thread(log->rdev->mddev->thread);
 		wait_event_lock_irq(log->iounit_wait,
 				    r5l_reclaimable_space(log) > reclaimable,
 				    log->io_list_lock);
@@ -1568,7 +1568,7 @@ void r5l_wake_reclaim(struct r5l_log *log, sector_t space)
 		if (new < target)
 			return;
 	} while (!try_cmpxchg(&log->reclaim_target, &target, new));
-	md_wakeup_thread(log->reclaim_thread);
+	md_p2p_wakeup_thread(log->reclaim_thread);
 }
 
 void r5l_quiesce(struct r5l_log *log, int quiesce)
@@ -1612,7 +1612,7 @@ struct r5l_recovery_ctx {
 	/*
 	 * read ahead page pool (ra_pool)
 	 * in recovery, log is read sequentially. It is not efficient to
-	 * read every page with sync_page_io(). The read ahead page pool
+	 * read every page with md_p2p_sync_page_io(). The read ahead page pool
 	 * reads multiple pages with one IO, so further log read can
 	 * just copy data from the pool.
 	 */
@@ -1782,7 +1782,7 @@ static int r5l_log_write_empty_meta_block(struct r5l_log *log, sector_t pos,
 	mb = page_address(page);
 	mb->checksum = cpu_to_le32(crc32c_le(log->uuid_checksum,
 					     mb, PAGE_SIZE));
-	if (!sync_page_io(log->rdev, pos, PAGE_SIZE, page, REQ_OP_WRITE |
+	if (!md_p2p_sync_page_io(log->rdev, pos, PAGE_SIZE, page, REQ_OP_WRITE |
 			  REQ_SYNC | REQ_FUA, false)) {
 		__free_page(page);
 		return -EIO;
@@ -1889,7 +1889,7 @@ r5l_recovery_replay_one_stripe(struct r5conf *conf,
 		rdev = conf->disks[disk_index].rdev;
 		if (rdev) {
 			atomic_inc(&rdev->nr_pending);
-			sync_page_io(rdev, sh->sector, PAGE_SIZE,
+			md_p2p_sync_page_io(rdev, sh->sector, PAGE_SIZE,
 				     sh->dev[disk_index].page, REQ_OP_WRITE,
 				     false);
 			rdev_dec_pending(rdev, rdev->mddev);
@@ -1897,7 +1897,7 @@ r5l_recovery_replay_one_stripe(struct r5conf *conf,
 		rrdev = conf->disks[disk_index].replacement;
 		if (rrdev) {
 			atomic_inc(&rrdev->nr_pending);
-			sync_page_io(rrdev, sh->sector, PAGE_SIZE,
+			md_p2p_sync_page_io(rrdev, sh->sector, PAGE_SIZE,
 				     sh->dev[disk_index].page, REQ_OP_WRITE,
 				     false);
 			rdev_dec_pending(rrdev, rrdev->mddev);
@@ -2382,7 +2382,7 @@ r5c_recovery_rewrite_data_only_stripes(struct r5l_log *log,
 					crc32c_le(log->uuid_checksum, addr,
 						  PAGE_SIZE));
 				kunmap_local(addr);
-				sync_page_io(log->rdev, write_pos, PAGE_SIZE,
+				md_p2p_sync_page_io(log->rdev, write_pos, PAGE_SIZE,
 					     dev->page, REQ_OP_WRITE, false);
 				write_pos = r5l_ring_add(log, write_pos,
 							 BLOCK_SECTORS);
@@ -2394,7 +2394,7 @@ r5c_recovery_rewrite_data_only_stripes(struct r5l_log *log,
 		mb->meta_size = cpu_to_le32(offset);
 		mb->checksum = cpu_to_le32(crc32c_le(log->uuid_checksum,
 						     mb, PAGE_SIZE));
-		sync_page_io(log->rdev, ctx->pos, PAGE_SIZE, page,
+		md_p2p_sync_page_io(log->rdev, ctx->pos, PAGE_SIZE, page,
 			     REQ_OP_WRITE | REQ_SYNC | REQ_FUA, false);
 		sh->log_start = ctx->pos;
 		list_add_tail(&sh->r5c, &log->stripe_in_journal_list);
@@ -2549,7 +2549,7 @@ static ssize_t r5c_journal_mode_show(struct mddev *mddev, char *page)
 	}
 
 out_unlock:
-	mddev_unlock(mddev);
+	md_p2p_mddev_unlock(mddev);
 	return ret;
 }
 
@@ -2766,7 +2766,7 @@ void r5c_release_extra_page(struct stripe_head *sh)
 
 	if (using_disk_info_extra_page) {
 		clear_bit(R5C_EXTRA_PAGE_IN_USE, &conf->cache_state);
-		md_wakeup_thread(conf->mddev->thread);
+		md_p2p_wakeup_thread(conf->mddev->thread);
 	}
 }
 
@@ -2821,7 +2821,7 @@ void r5c_finish_stripe_write_out(struct r5conf *conf,
 
 	if (test_and_clear_bit(STRIPE_FULL_WRITE, &sh->state))
 		if (atomic_dec_and_test(&conf->pending_full_writes))
-			md_wakeup_thread(conf->mddev->thread);
+			md_p2p_wakeup_thread(conf->mddev->thread);
 
 	spin_lock_irq(&log->stripe_in_journal_lock);
 	list_del_init(&sh->r5c);
@@ -2956,7 +2956,7 @@ static int r5l_load_log(struct r5l_log *log)
 	if (!page)
 		return -ENOMEM;
 
-	if (!sync_page_io(rdev, cp, PAGE_SIZE, page, REQ_OP_READ, false)) {
+	if (!md_p2p_sync_page_io(rdev, cp, PAGE_SIZE, page, REQ_OP_READ, false)) {
 		ret = -EIO;
 		goto ioerr;
 	}
@@ -3107,7 +3107,7 @@ int r5l_init_log(struct r5conf *conf, struct md_rdev *rdev)
 	spin_lock_init(&log->tree_lock);
 	INIT_RADIX_TREE(&log->big_stripe_tree, GFP_NOWAIT | __GFP_NOWARN);
 
-	thread = md_register_thread(r5l_reclaim_thread, log->rdev->mddev,
+	thread = md_p2p_register_thread(r5l_reclaim_thread, log->rdev->mddev,
 				    "reclaim");
 	if (!thread)
 		goto reclaim_thread;
@@ -3152,7 +3152,7 @@ void r5l_exit_log(struct r5conf *conf)
 {
 	struct r5l_log *log = conf->log;
 
-	md_unregister_thread(conf->mddev, &log->reclaim_thread);
+	md_p2p_unregister_thread(conf->mddev, &log->reclaim_thread);
 
 	/*
 	 * 'reconfig_mutex' is held by caller, set 'confg->log' to NULL to

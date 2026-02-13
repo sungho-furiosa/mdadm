@@ -380,13 +380,13 @@ static int raid0_set_limits(struct mddev *mddev)
 	struct queue_limits lim;
 	int err;
 
-	md_init_stacking_limits(&lim);
+	md_p2p_init_stacking_limits(&lim);
 	lim.max_hw_sectors = mddev->chunk_sectors;
 	lim.max_write_zeroes_sectors = mddev->chunk_sectors;
 	lim.io_min = mddev->chunk_sectors << 9;
 	lim.io_opt = lim.io_min * mddev->raid_disks;
 	lim.features |= BLK_FEAT_ATOMIC_WRITES;
-	err = mddev_stack_rdev_limits(mddev, &lim, MDDEV_STACK_INTEGRITY);
+	err = md_p2p_mddev_stack_rdev_limits(mddev, &lim, MDDEV_STACK_INTEGRITY);
 	if (err)
 		return err;
 	return queue_limits_set(mddev->gendisk->queue, &lim);
@@ -401,7 +401,7 @@ static int raid0_run(struct mddev *mddev)
 		pr_warn("md/raid0:%s: chunk size must be set.\n", mdname(mddev));
 		return -EINVAL;
 	}
-	if (md_check_no_bitmap(mddev))
+	if (md_p2p_check_no_bitmap(mddev))
 		return -EINVAL;
 
 	/* if private is not null, we are here after takeover */
@@ -419,7 +419,7 @@ static int raid0_run(struct mddev *mddev)
 	}
 
 	/* calculate array device size */
-	md_set_array_sectors(mddev, raid0_size(mddev, 0, 0));
+	md_p2p_set_array_sectors(mddev, raid0_size(mddev, 0, 0));
 
 	pr_debug("md/raid0:%s: md_size is %llu sectors.\n",
 		 mdname(mddev),
@@ -427,7 +427,7 @@ static int raid0_run(struct mddev *mddev)
 
 	dump_zones(mddev);
 
-	return md_integrity_register(mddev);
+	return md_p2p_integrity_register(mddev);
 }
 
 /*
@@ -543,7 +543,7 @@ static void raid0_handle_discard(struct mddev *mddev, struct bio *bio)
 
 		rdev = conf->devlist[(zone - conf->strip_zone) *
 			conf->strip_zone[0].nb_dev + disk];
-		md_submit_discard_bio(mddev, rdev, bio,
+		md_p2p_submit_discard_bio(mddev, rdev, bio,
 			dev_start + zone->dev_start + rdev->data_offset,
 			dev_end - dev_start);
 	}
@@ -558,7 +558,7 @@ static void raid0_map_submit_bio(struct mddev *mddev, struct bio *bio)
 	sector_t bio_sector = bio->bi_iter.bi_sector;
 	sector_t sector = bio_sector;
 
-	md_account_bio(mddev, &bio);
+	md_p2p_account_bio(mddev, &bio);
 
 	zone = find_zone(mddev->private, &sector);
 	switch (conf->layout) {
@@ -576,7 +576,7 @@ static void raid0_map_submit_bio(struct mddev *mddev, struct bio *bio)
 
 	if (unlikely(is_rdev_broken(tmp_dev))) {
 		bio_io_error(bio);
-		md_error(mddev, tmp_dev);
+		md_p2p_error(mddev, tmp_dev);
 		return;
 	}
 
@@ -595,7 +595,7 @@ static bool raid0_make_request(struct mddev *mddev, struct bio *bio)
 	unsigned sectors;
 
 	if (unlikely(bio->bi_opf & REQ_PREFLUSH)
-	    && md_flush_request(mddev, bio))
+	    && md_p2p_flush_request(mddev, bio))
 		return true;
 
 	if (unlikely((bio_op(bio) == REQ_OP_DISCARD))) {
@@ -825,12 +825,12 @@ static struct md_personality raid0_personality=
 
 static int __init raid0_init (void)
 {
-	return register_md_personality (&raid0_personality);
+	return md_p2p_register_personality (&raid0_personality);
 }
 
 static void raid0_exit (void)
 {
-	unregister_md_personality (&raid0_personality);
+	md_p2p_unregister_personality (&raid0_personality);
 }
 
 module_init(raid0_init);
