@@ -137,7 +137,7 @@ void md_p2p_reap_sync_thread(struct mddev *mddev);
  * speed limit - in case reconstruction slows down your system despite
  * idle IO detection.
  *
- * you can change it via /proc/sys/dev/raid/speed_limit_min and _max.
+ * you can change it via /proc/sys/dev/raid_p2p/speed_limit_min and _max.
  * or /sys/block/mdX/md/sync_speed_{min,max}
  */
 
@@ -9993,7 +9993,7 @@ static int __init md_init(void)
 	mdp_major = ret;
 
 	register_reboot_notifier(&md_notifier);
-	raid_table_header = register_sysctl("dev/raid", raid_table);
+	raid_table_header = register_sysctl("dev/raid_p2p", raid_table);
 
 	md_geninit();
 	return 0;
