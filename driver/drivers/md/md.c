@@ -69,6 +69,9 @@
 #include "md-bitmap.h"
 #include "md-cluster.h"
 
+int md_p2p_major = 0;
+EXPORT_SYMBOL(md_p2p_major);
+
 int mdp_major = 0;
 EXPORT_SYMBOL(mdp_major);
 
@@ -740,7 +743,7 @@ static dev_t mddev_alloc_unit(void)
 	dev_t dev = 0;
 
 	while (!is_free) {
-		dev = MKDEV(MD_P2P_MAJOR, next_minor);
+		dev = MKDEV(md_p2p_major, next_minor);
 		next_minor++;
 		if (next_minor > MINORMASK)
 			next_minor = 0;
@@ -757,7 +760,7 @@ static struct mddev *mddev_alloc(dev_t unit)
 	struct mddev *new;
 	int error;
 
-	if (unit && MAJOR(unit) != MD_P2P_MAJOR)
+	if (unit && MAJOR(unit) != md_p2p_major)
 		unit &= ~((1 << MdpMinorShift) - 1);
 
 	new = kzalloc(sizeof(*new), GFP_KERNEL);
@@ -774,7 +777,7 @@ static struct mddev *mddev_alloc(dev_t unit)
 		if (mddev_find_locked(unit))
 			goto out_destroy_new;
 		new->unit = unit;
-		if (MAJOR(unit) == MD_P2P_MAJOR)
+		if (MAJOR(unit) == md_p2p_major)
 			new->md_minor = MINOR(unit);
 		else
 			new->md_minor = MINOR(unit) >> MdpMinorShift;
@@ -5877,7 +5880,7 @@ struct mddev *md_alloc(dev_t dev, char *name)
 		goto out_unlock;
 	}
 
-	partitioned = (MAJOR(mddev->unit) != MD_P2P_MAJOR);
+	partitioned = (MAJOR(mddev->unit) != md_p2p_major);
 	shift = partitioned ? MdpMinorShift : 0;
 	unit = MINOR(mddev->unit) >> shift;
 
@@ -5967,7 +5970,7 @@ static int md_alloc_and_put(dev_t dev, char *name)
 
 static void md_probe(dev_t dev)
 {
-	if (MAJOR(dev) == MD_P2P_MAJOR && MINOR(dev) >= 512)
+	if (MAJOR(dev) == md_p2p_major && MINOR(dev) >= 512)
 		return;
 	if (create_on_open)
 		md_alloc_and_put(dev, NULL);
@@ -5997,7 +6000,7 @@ static int add_named_array(const char *val, const struct kernel_param *kp)
 	    isdigit(buf[2]) &&
 	    kstrtoul(buf+2, 10, &devnum) == 0 &&
 	    devnum <= MINORMASK)
-		return md_alloc_and_put(MKDEV(MD_P2P_MAJOR, devnum), NULL);
+		return md_alloc_and_put(MKDEV(md_p2p_major, devnum), NULL);
 
 	return -EINVAL;
 }
@@ -6687,7 +6690,7 @@ static void autorun_devices(int part)
 				    rdev0->preferred_minor << MdpMinorShift);
 			unit = MINOR(dev) >> MdpMinorShift;
 		} else {
-			dev = MKDEV(MD_P2P_MAJOR, rdev0->preferred_minor);
+			dev = MKDEV(md_p2p_major, rdev0->preferred_minor);
 			unit = MINOR(dev);
 		}
 		if (rdev0->preferred_minor != unit) {
@@ -9986,6 +9989,7 @@ static int __init md_init(void)
 	ret = __register_blkdev(MD_P2P_MAJOR, "md_p2p", md_probe);
 	if (ret < 0)
 		goto err_md;
+	md_p2p_major = ret;
 
 	ret = __register_blkdev(0, "mdp_p2p", md_probe);
 	if (ret < 0)
@@ -9999,7 +10003,7 @@ static int __init md_init(void)
 	return 0;
 
 err_mdp:
-	unregister_blkdev(MD_P2P_MAJOR, "md_p2p");
+	unregister_blkdev(md_p2p_major, "md_p2p");
 err_md:
 	destroy_workqueue(md_bitmap_wq);
 err_bitmap_wq:
@@ -10276,8 +10280,8 @@ static __exit void md_exit(void)
 	struct mddev *mddev;
 	int delay = 1;
 
-	unregister_blkdev(MD_P2P_MAJOR,"md");
-	unregister_blkdev(mdp_major, "mdp");
+	unregister_blkdev(md_p2p_major, "md_p2p");
+	unregister_blkdev(mdp_major, "mdp_p2p");
 	unregister_reboot_notifier(&md_notifier);
 	unregister_sysctl_table(raid_table_header);
 
