@@ -61,7 +61,7 @@ char *find_free_devnm(void)
 	int devnum;
 
 	for (devnum = 127; devnum != 128; devnum = devnum ? devnum - 1 : 511) {
-		sprintf(devnm, "md%d", devnum);
+		sprintf(devnm, "md_p2p%d", devnum);
 
 		if (mddev_busy(devnm))
 			continue;
@@ -216,7 +216,7 @@ int create_mddev(char *dev, char *name, int trustworthy,
 		if (ep == n2 || *ep)
 			num = -1;
 		else {
-			sprintf(devnm, "md%d", num);
+			sprintf(devnm, "md_p2p%d", num);
 			if (mddev_busy(devnm))
 				num = -1;
 		}
@@ -277,7 +277,7 @@ int create_mddev(char *dev, char *name, int trustworthy,
 		}
 	}
 	if (num >= 0) {
-		sprintf(devnm, "md%d", num);
+		sprintf(devnm, "md_p2p%d", num);
 		if (block_udev && udev_block(devnm) != UDEV_STATUS_SUCCESS)
 			return -1;
 		if (!create_named_array(devnm)) {
@@ -296,7 +296,7 @@ int create_mddev(char *dev, char *name, int trustworthy,
 			}
 			strcpy(devnm, _devnm);
 		} else {
-			sprintf(devnm, "md%d", num);
+			sprintf(devnm, "md_p2p%d", num);
 			if (mddev_busy(devnm)) {
 				pr_err("%s is already in use.\n",
 				       dev);

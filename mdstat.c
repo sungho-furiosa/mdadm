@@ -195,7 +195,7 @@ struct mdstat_ent *mdstat_read(int hold, int start)
 		else
 			return NULL;
 	} else
-		f = fopen("/proc/mdstat", "r");
+		f = fopen("/proc/mdstat_p2p", "r");
 	if (f == NULL)
 		return NULL;
 
@@ -219,9 +219,9 @@ struct mdstat_ent *mdstat_read(int hold, int start)
 		if (strcmp(line, "unused") == 0)
 			continue;
 		insert_here = NULL;
-		/* Better be an md line.. */
-		if (strncmp(line, "md", 2)!= 0 || strlen(line) >= 32 ||
-		    (line[2] != '_' && !isdigit(line[2])))
+		/* Better be an md_p2p line.. */
+		if (strncmp(line, "md_p2p", 6)!= 0 || strlen(line) >= 32 ||
+		    (line[6] != '_' && line[6] != 'd' && !isdigit(line[6])))
 			continue;
 		strcpy(devnm, line);
 
@@ -263,7 +263,7 @@ struct mdstat_ent *mdstat_read(int hold, int start)
 				char *ep = strchr(w, '[');
 				ent->devcnt +=
 					add_member_devname(&ent->members, w);
-				if (ep && strncmp(w, "md", 2) == 0) {
+				if (ep && strncmp(w, "md_p2p", 6) == 0) {
 					/* This has an md device as a component.
 					 * If that device is already in the
 					 * list, make sure we insert before

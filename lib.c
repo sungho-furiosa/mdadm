@@ -166,9 +166,9 @@ char *devid2devnm(dev_t devid)
 		}
 	}
 	if (major(devid) == MD_MAJOR)
-		sprintf(devnm,"md%d", minor(devid));
+		sprintf(devnm,"md_p2p%d", minor(devid));
 	else if (major(devid) == (unsigned)get_mdp_major())
-		sprintf(devnm,"md_d%d",
+		sprintf(devnm,"md_p2p_d%d",
 			(minor(devid)>>MdpMinorShift));
 	else
 		return NULL;
