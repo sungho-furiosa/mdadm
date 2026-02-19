@@ -2635,3 +2635,49 @@ bool init_md_p2p(void)
 
 	return ret;
 }
+
+bool load_raid_personality(int level)
+{
+	const char *module_name = NULL;
+	char check_path[64];
+	char cmd[128];
+	FILE *fp;
+
+	switch (level) {
+	case -1:
+		module_name = "linear-p2p";
+		break;
+	case 0:
+		module_name = "raid0-p2p";
+		break;
+	case 1:
+		module_name = "raid1-p2p";
+		break;
+	case 4:
+	case 5:
+	case 6:
+		module_name = "raid456-p2p";
+		break;
+	case 10:
+		module_name = "raid10-p2p";
+		break;
+	default:
+		pr_err("Unknown RAID level %d\n", level);
+		return false;
+	}
+
+	snprintf(check_path, sizeof(check_path), "/sys/module/%s", module_name);
+	fp = fopen(check_path, "r");
+	if (fp != NULL) {
+		fclose(fp);
+		return true;
+	}
+
+	snprintf(cmd, sizeof(cmd), "modprobe %s", module_name);
+	if (system(cmd) != 0) {
+		pr_err("Failed to load RAID personality module: %s\n", module_name);
+		return false;
+	}
+
+	return true;
+}

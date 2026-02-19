@@ -9067,16 +9067,16 @@ static void raid5_exit(void)
 module_init(raid5_init);
 module_exit(raid5_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("RAID4/5/6 (striping with parity) personality for MD");
-MODULE_ALIAS("md-personality-4"); /* RAID5 */
-MODULE_ALIAS("md-raid5");
-MODULE_ALIAS("md-raid4");
-MODULE_ALIAS("md-level-5");
-MODULE_ALIAS("md-level-4");
-MODULE_ALIAS("md-personality-8"); /* RAID6 */
-MODULE_ALIAS("md-raid6");
-MODULE_ALIAS("md-level-6");
+MODULE_DESCRIPTION("RAID4/5/6 (striping with parity) personality for MD with P2PDMA support");
+MODULE_ALIAS("md-personality-4-p2p"); /* RAID5 */
+MODULE_ALIAS("md-raid5-p2p");
+MODULE_ALIAS("md-raid4-p2p");
+MODULE_ALIAS("md-level-5-p2p");
+MODULE_ALIAS("md-level-4-p2p");
+MODULE_ALIAS("md-personality-8-p2p"); /* RAID6 */
+MODULE_ALIAS("md-raid6-p2p");
+MODULE_ALIAS("md-level-6-p2p");
 
 /* This used to be two separate modules, they were: */
-MODULE_ALIAS("raid5");
-MODULE_ALIAS("raid6");
+MODULE_ALIAS("raid5-p2p");
+MODULE_ALIAS("raid6-p2p");

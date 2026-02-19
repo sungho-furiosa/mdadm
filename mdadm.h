@@ -862,6 +862,7 @@ extern int restore_stripes(int *dest, unsigned long long *offsets,
 			   char *src_buf);
 extern bool sysfs_is_libata_allow_tpm_enabled(const int verbose);
 extern bool init_md_p2p(void);
+extern bool load_raid_personality(int level);
 
 #ifndef Sendmail
 #define Sendmail "/usr/lib/sendmail -t"

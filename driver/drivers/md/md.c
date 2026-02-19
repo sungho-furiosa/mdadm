@@ -10334,6 +10334,6 @@ module_param_call(new_array, add_named_array, NULL, NULL, S_IWUSR);
 module_param(create_on_open, bool, S_IRUSR|S_IWUSR);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("MD RAID framework");
-MODULE_ALIAS("md");
+MODULE_DESCRIPTION("MD RAID framework with P2PDMA support");
+MODULE_ALIAS("md_p2p");
 MODULE_ALIAS_BLOCKDEV_MAJOR(0);

@@ -550,6 +550,12 @@ int Create(struct supertype *st, struct mddev_ident *ident, int subdevs,
 		pr_err("a RAID level is needed to create an array.\n");
 		return 1;
 	}
+
+	if (!load_raid_personality(s->level)) {
+		pr_err("Failed to load RAID personality module for level %d\n", s->level);
+		return 1;
+	}
+
 	if (s->raiddisks < 4 && s->level == 6) {
 		pr_err("at least 4 raid-devices needed for level 6\n");
 		return 1;

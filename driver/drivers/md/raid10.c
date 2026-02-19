@@ -5159,7 +5159,7 @@ static void raid_exit(void)
 module_init(raid_init);
 module_exit(raid_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("RAID10 (striped mirror) personality for MD");
-MODULE_ALIAS("md-personality-9"); /* RAID10 */
-MODULE_ALIAS("md-raid10");
-MODULE_ALIAS("md-level-10");
+MODULE_DESCRIPTION("RAID10 (striped mirror) personality for MD with P2PDMA support");
+MODULE_ALIAS("md-personality-9-p2p"); /* RAID10 */
+MODULE_ALIAS("md-raid10-p2p");
+MODULE_ALIAS("md-level-10-p2p");

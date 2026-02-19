@@ -346,7 +346,7 @@ static void linear_exit(void)
 module_init(linear_init);
 module_exit(linear_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Linear device concatenation personality for MD (deprecated)");
-MODULE_ALIAS("md-personality-1"); /* LINEAR - deprecated*/
-MODULE_ALIAS("md-linear");
-MODULE_ALIAS("md-level--1");
+MODULE_DESCRIPTION("Linear device concatenation personality for MD with P2PDMA support (deprecated)");
+MODULE_ALIAS("md-personality-1-p2p"); /* LINEAR - deprecated*/
+MODULE_ALIAS("md-linear-p2p");
+MODULE_ALIAS("md-level--1-p2p");
