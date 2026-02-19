@@ -87,13 +87,13 @@ char *find_free_devnm(void)
 /*
  * We need a new md device to assemble/build/create an array.
  * 'dev' is a name given us by the user (command line or mdadm.conf)
- * It might start with /dev or /dev/md any might end with a digit
+ * It might start with /dev or /dev/md_p2p any might end with a digit
  * string.
- * If it starts with just /dev, it must be /dev/mdX or /dev/md_dX
+ * If it starts with just /dev, it must be /dev/md_p2pX or /dev/md_p2p_dX
  * If it ends with a digit string, then it must be as above, or
  * 'trustworthy' must be 'METADATA' and the 'dev' must be
- *  /dev/md/'name'NN or 'name'NN
- * If it doesn't end with a digit string, it must be /dev/md/'name'
+ *  /dev/md_p2p/'name'NN or 'name'NN
+ * If it doesn't end with a digit string, it must be /dev/md_p2p/'name'
  * or 'name' or must be NULL.
  * If the digit string is present, it gives the minor number to use
  * If not, we choose a high, unused minor number.
@@ -102,7 +102,7 @@ char *find_free_devnm(void)
  * else if trustworthy is 'METADATA' we use md
  * else the choice depends on 'autof'.
  * If name is NULL it is assumed to match whatever dev provides.
- * If both name and dev are NULL, we choose a name 'mdXX' or 'mdpXX'
+ * If both name and dev are NULL, we choose a name 'md_p2pXX' or 'mdpXX'
  *
  * If 'name' is given, and 'trustworthy' is 'foreign' and name is not
  * supported by 'dev', we add a "_%d" suffix based on the minor number
@@ -110,10 +110,10 @@ char *find_free_devnm(void)
  *
  * If udev is configured, we create a temporary device, open it, and
  * unlink it.
- * If not, we create the /dev/mdXX device, and if name is usable,
- * /dev/md/name
- * In any case we return /dev/md/name or (if that isn't available)
- * /dev/mdXX in 'chosen'.
+ * If not, we create the /dev/md_p2pXX device, and if name is usable,
+ * /dev/md_p2p/name
+ * In any case we return /dev/md_p2p/name or (if that isn't available)
+ * /dev/md_p2pXX in 'chosen'.
  *
  * When we create devices, we use uid/gid/umask from config file.
  */

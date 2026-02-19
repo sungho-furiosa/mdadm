@@ -1122,16 +1122,14 @@ int Create(struct supertype *st, struct mddev_ident *ident, int subdevs,
 	info.array.chunk_size = s->chunk*1024;
 
 	if (*name == 0) {
-		/* base name on devname */
-		/*  /dev/md0 -> 0
-		 *  /dev/md_d0 -> d0
-		 *  /dev/md_foo -> foo
-		 *  /dev/md/1 -> 1
-		 *  /dev/md/d1 -> d1
-		 *  /dev/md/home -> home
-		 *  /dev/mdhome -> home
+		/*  /dev/md_p2p0 -> 0
+		 *  /dev/md_p2p_d0 -> d0
+		 *  /dev/md_p2p_foo -> foo
+		 *  /dev/md_p2p/1 -> 1
+		 *  /dev/md_p2p/d1 -> d1
+		 *  /dev/md_p2p/home -> home
+		 *  /dev/md_p2phome -> home
 		 */
-		/* FIXME compare this with rules in create_mddev */
 		name = strrchr(chosen_name, '/');
 
 		if (name) {

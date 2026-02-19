@@ -196,10 +196,10 @@ inline void ident_init(struct mddev_ident *ident)
  *
  * @devname can have following forms:
  *	'<ignore>' keyword (if allowed)
- *	/dev/md{number}
- *	/dev/md_d{number} (legacy)
- *	/dev/md_{name}
- *	/dev/md/{name}
+ *	/dev/md_p2p{number}
+ *	/dev/md_p2p_d{number} (legacy)
+ *	/dev/md_p2p_{name}
+ *	/dev/md_p2p/{name}
  *	{name}
  *
  * If verification passed, duplicate memory and set devname in @ident.

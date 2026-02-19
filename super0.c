@@ -270,9 +270,9 @@ static void brief_examine_super0(struct supertype *st, int verbose)
 {
 	mdp_super_t *sb = st->sb;
 	char *c=map_num(pers, sb->level);
-	char devname[20];
+	char devname[32];
 
-	sprintf(devname, "/dev/md%d", sb->md_minor);
+	sprintf(devname, "/dev/md_p2p%d", sb->md_minor);
 
 	if (verbose) {
 		printf("ARRAY %s level=%s num-devices=%d",

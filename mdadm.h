@@ -100,11 +100,11 @@ struct dlm_lksb {
 #define DEV_DIR_LEN (sizeof(DEV_DIR) - 1)
 #endif /* DEV_DIR */
 
-/* DEV_NUM_PREF is a subpath to numbered MD devices, e.g. /dev/md1 or directory name.
+/* DEV_NUM_PREF is a subpath to numbered MD devices, e.g. /dev/md_p2p1 or directory name.
  * DEV_NUM_PREF_LEN is a length with Null byte excluded.
  */
 #ifndef DEV_NUM_PREF
-#define DEV_NUM_PREF "/dev/md"
+#define DEV_NUM_PREF "/dev/md_p2p"
 #define DEV_NUM_PREF_LEN (sizeof(DEV_NUM_PREF) - 1)
 #endif /* DEV_NUM_PREF */
 
@@ -112,7 +112,7 @@ struct dlm_lksb {
  * DEV_MD_DIR_LEN is a length with Null byte excluded.
  */
 #ifndef DEV_MD_DIR
-#define DEV_MD_DIR "/dev/md/"
+#define DEV_MD_DIR "/dev/md_p2p/"
 #define DEV_MD_DIR_LEN (sizeof(DEV_MD_DIR) - 1)
 #endif /* DEV_MD_DIR */
 
