@@ -5914,9 +5914,9 @@ struct mddev *md_alloc(dev_t dev, char *name)
 	if (name)
 		strcpy(disk->disk_name, name);
 	else if (partitioned)
-		sprintf(disk->disk_name, "md_d%d", unit);
+		sprintf(disk->disk_name, "md_p2p_d%d", unit);
 	else
-		sprintf(disk->disk_name, "md%d", unit);
+		sprintf(disk->disk_name, "md_p2p%d", unit);
 	disk->fops = &md_fops;
 	disk->private_data = mddev;
 
@@ -9963,7 +9963,7 @@ static void md_geninit(void)
 {
 	pr_debug("md: sizeof(mdp_super_t) = %d\n", (int)sizeof(mdp_super_t));
 
-	proc_create("mdstat", S_IRUGO, NULL, &mdstat_proc_ops);
+	proc_create("mdstat_p2p", S_IRUGO, NULL, &mdstat_proc_ops);
 }
 
 static int __init md_init(void)
@@ -10291,7 +10291,7 @@ static __exit void md_exit(void)
 		msleep(delay);
 		delay += delay;
 	}
-	remove_proc_entry("mdstat", NULL);
+	remove_proc_entry("mdstat_p2p", NULL);
 
 	spin_lock(&all_mddevs_lock);
 	list_for_each_entry(mddev, &all_mddevs, all_mddevs) {

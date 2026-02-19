@@ -131,10 +131,10 @@ static void __init md_setup_drive(struct md_setup_args *args)
 
 	if (args->partitioned) {
 		mdev = MKDEV(mdp_major, args->minor << MdpMinorShift);
-		sprintf(name, "md_d%d", args->minor);
+		sprintf(name, "md_p2p_d%d", args->minor);
 	} else {
 		mdev = MKDEV(MD_P2P_MAJOR, args->minor);
-		sprintf(name, "md%d", args->minor);
+		sprintf(name, "md_p2p%d", args->minor);
 	}
 
 	for (i = 0; i < MD_SB_DISKS && devname != NULL; i++) {
