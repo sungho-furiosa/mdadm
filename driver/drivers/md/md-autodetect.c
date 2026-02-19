@@ -133,7 +133,7 @@ static void __init md_setup_drive(struct md_setup_args *args)
 		mdev = MKDEV(mdp_major, args->minor << MdpMinorShift);
 		sprintf(name, "md_d%d", args->minor);
 	} else {
-		mdev = MKDEV(MD_MAJOR, args->minor);
+		mdev = MKDEV(MD_P2P_MAJOR, args->minor);
 		sprintf(name, "md%d", args->minor);
 	}
 

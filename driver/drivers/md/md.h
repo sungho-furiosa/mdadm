@@ -978,6 +978,7 @@ static inline void mddev_unlock_and_resume(struct mddev *mddev)
 struct mdu_array_info_s;
 struct mdu_disk_info_s;
 
+#define MD_P2P_MAJOR 0
 extern int mdp_major;
 extern struct workqueue_struct *md_bitmap_wq;
 void md_autostart_arrays(int part);
