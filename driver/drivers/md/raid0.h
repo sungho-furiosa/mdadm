@@ -28,6 +28,7 @@ struct r0conf {
 					    * by strip_zone->dev */
 	int			nr_strip_zones;
 	enum r0layout		layout;
+	bool			p2pdma_supported; /* All devices can consume P2P pages */
 };
 
 #endif

@@ -14,6 +14,7 @@
 #include <linux/seq_file.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/pci-p2pdma.h>
 #include <trace/events/block.h>
 #include "md.h"
 #include "raid0.h"
@@ -418,6 +419,29 @@ static int raid0_run(struct mddev *mddev)
 			return ret;
 	}
 
+	if (IS_ENABLED(CONFIG_PCI_P2PDMA)) {
+		struct md_rdev *rdev;
+		bool all_support_p2p = true;
+
+		rdev_for_each(rdev, mddev) {
+			if (!blk_queue_pci_p2pdma(rdev->bdev->bd_disk->queue)) {
+				all_support_p2p = false;
+				pr_debug("md/raid0:%s: %pg doesn't support P2P consumer role\n",
+					 mdname(mddev), rdev->bdev);
+				break;
+			}
+		}
+
+		conf->p2pdma_supported = all_support_p2p;
+
+		if (all_support_p2p)
+			pr_info("md/raid0:%s: P2PDMA enabled - all devices support P2P consumer role\n",
+				mdname(mddev));
+		else
+			pr_info("md/raid0:%s: P2PDMA disabled - some devices don't support P2P consumer role\n",
+				mdname(mddev));
+	}
+
 	/* calculate array device size */
 	md_p2p_set_array_sectors(mddev, raid0_size(mddev, 0, 0));
 
@@ -590,6 +614,7 @@ static void raid0_map_submit_bio(struct mddev *mddev, struct bio *bio)
 
 static bool raid0_make_request(struct mddev *mddev, struct bio *bio)
 {
+	struct r0conf *conf = mddev->private;
 	sector_t sector;
 	unsigned chunk_sects;
 	unsigned sectors;
@@ -597,6 +622,22 @@ static bool raid0_make_request(struct mddev *mddev, struct bio *bio)
 	if (unlikely(bio->bi_opf & REQ_PREFLUSH)
 	    && md_p2p_flush_request(mddev, bio))
 		return true;
+
+	if (IS_ENABLED(CONFIG_PCI_P2PDMA) && bio_has_data(bio)) {
+		struct bio_vec bv;
+		struct bvec_iter iter;
+
+		bio_for_each_segment(bv, bio, iter) {
+			if (is_pci_p2pdma_page(bv.bv_page)) {
+				if (!conf->p2pdma_supported) {
+					bio->bi_status = BLK_STS_NOTSUPP;
+					bio_endio(bio);
+					return true;
+				}
+				break;
+			}
+		}
+	}
 
 	if (unlikely((bio_op(bio) == REQ_OP_DISCARD))) {
 		raid0_handle_discard(mddev, bio);
