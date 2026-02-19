@@ -34,7 +34,7 @@ int create_named_array(char *devnm)
 	int fd;
 	int n = -1;
 	static const char new_array_file[] = {
-		"/sys/module/md_mod/parameters/new_array"
+		"/sys/module/md_p2p/parameters/new_array"
 	};
 
 	fd = open(new_array_file, O_WRONLY);
@@ -130,7 +130,7 @@ int create_mddev(char *dev, char *name, int trustworthy,
 	char devnm[32];
 	char cbuf[400];
 
-	if (!init_md_mod()) {
+	if (!init_md_p2p()) {
 		pr_err("init md module parameters fail\n");
 		return -1;
 	}

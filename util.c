@@ -2566,7 +2566,7 @@ bool set_md_mod_parameter(const char *name, const char *value)
 	int fd;
 	bool ret = true;
 
-	snprintf(path, sizeof(path), "/sys/module/md_mod/parameters/%s", name);
+	snprintf(path, sizeof(path), "/sys/module/md_p2p/parameters/%s", name);
 
 	fd = open(path, O_WRONLY);
 	if (fd < 0) {
@@ -2583,14 +2583,14 @@ bool set_md_mod_parameter(const char *name, const char *value)
 	return ret;
 }
 
-/* Init kernel md_mod and parameters here if needed */
-bool init_md_mod(void)
+/* Init kernel md_p2p and parameters here if needed */
+bool init_md_p2p(void)
 {
 	bool ret = true;
 	char module_path[32];
 	FILE *fp;
 
-	snprintf(module_path, sizeof(module_path), "/sys/module/md_mod");
+	snprintf(module_path, sizeof(module_path), "/sys/module/md_p2p");
 	fp = fopen(module_path, "r");
 	if (fp == NULL) {
 
@@ -2612,8 +2612,8 @@ bool init_md_mod(void)
 
 		setenv("PATH", buf, 1);
 
-		if (system("modprobe md_mod") != 0) {
-			pr_err("Can't load kernel module md_mod\n");
+		if (system("modprobe md_p2p") != 0) {
+			pr_err("Can't load kernel module md_p2p\n");
 			return false;
 		}
 	} else

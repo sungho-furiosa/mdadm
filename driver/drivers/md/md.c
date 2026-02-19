@@ -5853,7 +5853,7 @@ struct mddev *md_alloc(dev_t dev, char *name)
 	 * MD_MAJOR or mdp_major.  In this case, if "name" is NULL, then
 	 * the device is being created by opening a node in /dev.
 	 * If "name" is not NULL, the device is being created by
-	 * writing to /sys/module/md_mod/parameters/new_array.
+	 * writing to /sys/module/md_p2p/parameters/new_array.
 	 */
 	static DEFINE_MUTEX(disks_mutex);
 	struct mddev *mddev;
