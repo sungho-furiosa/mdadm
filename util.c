@@ -2645,21 +2645,21 @@ bool load_raid_personality(int level)
 
 	switch (level) {
 	case -1:
-		module_name = "linear-p2p";
+		module_name = "linear_p2p";
 		break;
 	case 0:
-		module_name = "raid0-p2p";
+		module_name = "raid0_p2p";
 		break;
 	case 1:
-		module_name = "raid1-p2p";
+		module_name = "raid1_p2p";
 		break;
 	case 4:
 	case 5:
 	case 6:
-		module_name = "raid456-p2p";
+		module_name = "raid456_p2p";
 		break;
 	case 10:
-		module_name = "raid10-p2p";
+		module_name = "raid10_p2p";
 		break;
 	default:
 		pr_err("Unknown RAID level %d\n", level);
